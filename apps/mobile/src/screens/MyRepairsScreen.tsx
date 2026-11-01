@@ -22,18 +22,73 @@ export const MyRepairsScreen: React.FC = () => {
   const [modalAction, setModalAction] = useState<string | null>(null);
   const [diagnosis, setDiagnosis] = useState('');
   const [workPerformed, setWorkPerformed] = useState('');
+  const [componentsReplaced, setComponentsReplaced] = useState('');
   const [notes, setNotes] = useState('');
   const [reason, setReason] = useState('');
   const [partsDesc, setPartsDesc] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Filter mode for Hardware Technician Workbench
+  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'ALL'>('ACTIVE');
+
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['my_repairs_list'],
     queryFn: () => apiRequest('/repairs/my-repairs'),
-    refetchInterval: 3000,
+    refetchInterval: 4000,
   });
 
   const jobs = data?.data || [];
+
+  const incomingJobs = jobs.filter((j: any) => j.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN);
+  const returnJobs = jobs.filter((j: any) => j.isReturnClaim);
+  const activeJobs = jobs.filter(
+    (j: any) =>
+      j.status === DeviceStatus.ACCEPTED_BY_TECHNICIAN ||
+      j.status === DeviceStatus.REPAIR_IN_PROGRESS ||
+      j.status === DeviceStatus.ON_HOLD ||
+      j.status === DeviceStatus.PARTS_REQUIRED ||
+      j.status === DeviceStatus.RETURN_TO_TECHNICIAN
+  );
+
+  const displayedJobs =
+    filterMode === 'INCOMING'
+      ? incomingJobs
+      : filterMode === 'ACTIVE'
+      ? activeJobs
+      : filterMode === 'RETURNS'
+      ? returnJobs
+      : jobs;
+
+  const handleAcceptSingle = async (jobId: string) => {
+    setSubmitting(true);
+    try {
+      await apiRequest(`/repairs/${jobId}/accept`, { method: 'POST' });
+      await apiRequest(`/repairs/${jobId}/start`, { method: 'POST', body: JSON.stringify({}) });
+      Alert.alert('Custody Accepted', 'Board accepted into active workbench!');
+      refetch();
+    } catch (err: any) {
+      Alert.alert('Accept Error', err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAcceptAll = async () => {
+    if (incomingJobs.length === 0) return;
+    setSubmitting(true);
+    try {
+      for (const j of incomingJobs) {
+        await apiRequest(`/repairs/${j.id}/accept`, { method: 'POST' });
+        await apiRequest(`/repairs/${j.id}/start`, { method: 'POST', body: JSON.stringify({}) });
+      }
+      Alert.alert('Batch Handover Complete', `Successfully accepted all ${incomingJobs.length} boards into active workbench.`);
+      refetch();
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const handleAction = async (action: string) => {
     if (!activeJob) return;
@@ -48,7 +103,12 @@ export const MyRepairsScreen: React.FC = () => {
           setSubmitting(false);
           return;
         }
-        body = { diagnosis, workPerformed, repairNotes: notes };
+        body = {
+          diagnosis,
+          workPerformed,
+          repairNotes: notes,
+          componentsReplaced: componentsReplaced.trim() || undefined,
+        };
       } else if (action === 'not-possible') {
         if (!reason.trim()) {
           Alert.alert('Required', 'Reason is required for marking repair not possible.');
@@ -73,6 +133,12 @@ export const MyRepairsScreen: React.FC = () => {
       Alert.alert('Success', `Action '${action}' recorded successfully`);
       setModalAction(null);
       setActiveJob(null);
+      setDiagnosis('');
+      setWorkPerformed('');
+      setComponentsReplaced('');
+      setNotes('');
+      setReason('');
+      setPartsDesc('');
       refetch();
     } catch (err: any) {
       Alert.alert('Error', err.message);
@@ -83,56 +149,170 @@ export const MyRepairsScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>Hardware Workbench</Text>
+          <Text style={styles.headerSubtitle}>Board Level Repair Operations</Text>
+        </View>
+        <View style={styles.liveSyncBadge}>
+          <View style={styles.liveDot} />
+          <Text style={styles.liveText}>SYNCED</Text>
+        </View>
+      </View>
+
+      {/* Segmented Filter Bar */}
+      <View style={styles.segmentedContainer}>
+        <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'ACTIVE' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('ACTIVE')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'ACTIVE' && styles.segmentTextActive]}>
+            ⚡ Active ({activeJobs.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'INCOMING' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('INCOMING')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'INCOMING' && styles.segmentTextActive]}>
+            📥 Incoming ({incomingJobs.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'RETURNS' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('RETURNS')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'RETURNS' && styles.segmentTextActive]}>
+            🔴 Returns ({returnJobs.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'ALL' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('ALL')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'ALL' && styles.segmentTextActive]}>
+            All ({jobs.length})
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Bulk Custody Handover Banner */}
+      {incomingJobs.length > 0 && filterMode === 'INCOMING' && (
+        <View style={styles.handoverBanner}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.handoverBannerTitle}>Handover from QC Awaiting Custody</Text>
+            <Text style={styles.handoverBannerSub}>{incomingJobs.length} devices ready to be taken on bench</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.handoverAcceptAllBtn}
+            onPress={handleAcceptAll}
+            disabled={submitting}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.handoverAcceptAllText}>🤝 Accept All ({incomingJobs.length})</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Main List */}
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={isLoading || isRefetching} onRefresh={() => { refetch(); }} tintColor={colors.primaryLight} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={isLoading || isRefetching}
+            onRefresh={() => { refetch(); }}
+            tintColor={colors.primaryLight}
+          />
+        }
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm }}>
-          <Text style={styles.screenTitle}>My Repair Station</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(34, 197, 94, 0.15)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
-            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e', marginRight: 5 }} />
-            <Text style={{ color: '#22c55e', fontSize: 11, fontWeight: '700' }}>LIVE SYNC</Text>
-          </View>
-        </View>
-
-        {jobs.length === 0 && !isLoading && (
+        {displayedJobs.length === 0 && !isLoading && (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No assigned repair jobs at this time.</Text>
+            <Text style={styles.emptyIcon}>🛠️</Text>
+            <Text style={styles.emptyTitle}>No Devices in This Section</Text>
+            <Text style={styles.emptyText}>
+              {filterMode === 'INCOMING'
+                ? 'No pending handovers from QC technicians.'
+                : filterMode === 'RETURNS'
+                ? 'No return claim devices assigned.'
+                : 'Your workbench is clear. Check incoming handovers!'}
+            </Text>
           </View>
         )}
 
-        {jobs.map((job: any) => {
-          const device = job.device;
-          const primaryImei = device.imeis.find((i: any) => i.isPrimary)?.imei || device.imeis[0]?.imei;
+        {displayedJobs.map((job: any) => {
+          const device = job.device || {};
+          const primaryImei = device.imeis?.find((i: any) => i.isPrimary)?.imei || device.imeis?.[0]?.imei || 'NO-IMEI';
           const isReturn = job.isReturnClaim;
+          const isIncoming = job.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN;
 
           return (
-            <TouchableOpacity
+            <View
               key={job.id}
               style={[styles.jobCard, isReturn && styles.returnClaimCardBorder]}
-              onPress={() => setActiveJob(job)}
             >
-              <View style={styles.cardHeader}>
-                <View>
-                  <Text style={styles.modelName}>{device.model?.name || 'iPhone'}</Text>
-                  <Text style={styles.imeiText}>IMEI: {maskIMEI(primaryImei)}</Text>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => setActiveJob(job)}
+              >
+                <View style={styles.cardHeader}>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <Text style={styles.modelName}>{device.model?.name || 'iPhone Device'}</Text>
+                    <Text style={styles.imeiText}>IMEI: {maskIMEI(primaryImei)}</Text>
+                  </View>
+                  <StatusBadge status={job.status} />
                 </View>
-                <StatusBadge status={job.status} />
-              </View>
 
-              {isReturn && (
-                <View style={styles.returnBadge}>
-                  <Text style={styles.returnBadgeText}>
-                    RETURN CLAIM: {job.returnClaim?.claimType || 'SAME FAULT'}
+                {/* Return Claim Alert Badge */}
+                {isReturn && (
+                  <View style={styles.returnBadge}>
+                    <Text style={styles.returnBadgeText}>
+                      🔴 RETURN CLAIM: {job.returnClaim?.claimType || 'SAME FAULT'}
+                    </Text>
+                    {job.returnClaim?.previousRepairJob && (
+                      <Text style={styles.returnSubText}>
+                        Prev Tech: {job.returnClaim.previousRepairJob.assignments?.[0]?.technician?.name || 'Unknown'} | Job #{job.returnClaim.previousRepairJob.jobNumber}
+                      </Text>
+                    )}
+                  </View>
+                )}
+
+                <View style={styles.cardFooter}>
+                  <Text style={styles.jobNumber}>Job #{job.jobNumber}</Text>
+                  <Text style={[styles.priorityText, device.priority === 'URGENT' && { color: colors.danger }]}>
+                    {device.priority || 'NORMAL'}
                   </Text>
                 </View>
-              )}
+              </TouchableOpacity>
 
-              <View style={styles.cardFooter}>
-                <Text style={styles.jobNumber}>{job.jobNumber}</Text>
-                <Text style={styles.priorityText}>{device.priority}</Text>
-              </View>
-            </TouchableOpacity>
+              {/* Quick Inline Action for Incoming Devices */}
+              {isIncoming ? (
+                <View style={styles.inlineActionRow}>
+                  <TouchableOpacity
+                    style={styles.quickAcceptBtn}
+                    onPress={() => handleAcceptSingle(job.id)}
+                    disabled={submitting}
+                  >
+                    <Text style={styles.quickAcceptText}>🤝 Accept Custody & Start Repair</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.inlineActionRow}>
+                  <TouchableOpacity
+                    style={styles.manageBtn}
+                    onPress={() => setActiveJob(job)}
+                  >
+                    <Text style={styles.manageBtnText}>⚡ Manage Repair / Submit QC ➔</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
           );
         })}
       </ScrollView>
@@ -141,22 +321,32 @@ export const MyRepairsScreen: React.FC = () => {
       <Modal visible={!!activeJob} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <ScrollView>
+            <ScrollView showsVerticalScrollIndicator={false}>
               {activeJob && (
                 <>
-                  <Text style={styles.modalTitle}>{activeJob.device?.model?.name}</Text>
-                  <Text style={styles.modalSubtitle}>Job: {activeJob.jobNumber}</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.modalTitle}>{activeJob.device?.model?.name}</Text>
+                    <StatusBadge status={activeJob.status} />
+                  </View>
+                  <Text style={styles.modalSubtitle}>Job #{activeJob.jobNumber}</Text>
 
                   {/* Previous Repair Warning for Return Claims */}
-                  {activeJob.isReturnClaim && activeJob.returnClaim?.previousRepairJob && (
+                  {activeJob.isReturnClaim && (
                     <View style={styles.historyBox}>
-                      <Text style={styles.historyBoxTitle}>Previous Repair History</Text>
+                      <Text style={styles.historyBoxTitle}>⚠️ RETURN CLAIM AUDIT</Text>
                       <Text style={styles.historyText}>
-                        Previous Tech: {activeJob.returnClaim.previousRepairJob.assignments?.[0]?.technician?.name || 'N/A'}
+                        Type: {activeJob.returnClaim?.claimType || 'SAME FAULT'}
                       </Text>
-                      <Text style={styles.historyText}>
-                        Diagnosis: {activeJob.returnClaim.previousRepairJob.attempts?.[0]?.diagnosis || 'N/A'}
-                      </Text>
+                      {activeJob.returnClaim?.previousRepairJob && (
+                        <>
+                          <Text style={styles.historyText}>
+                            Previous Tech: {activeJob.returnClaim.previousRepairJob.assignments?.[0]?.technician?.name || 'N/A'}
+                          </Text>
+                          <Text style={styles.historyText}>
+                            Previous Diagnosis: {activeJob.returnClaim.previousRepairJob.attempts?.[0]?.diagnosis || 'N/A'}
+                          </Text>
+                        </>
+                      )}
                     </View>
                   )}
 
@@ -164,16 +354,24 @@ export const MyRepairsScreen: React.FC = () => {
                   {modalAction === null && (
                     <View style={styles.actionsContainer}>
                       {activeJob.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN && (
-                        <TouchableOpacity style={styles.actionBtnPrimary} onPress={() => handleAction('accept')}>
-                          <Text style={styles.actionBtnText}>Accept Job</Text>
+                        <TouchableOpacity
+                          style={styles.actionBtnPrimary}
+                          onPress={() => handleAction('accept')}
+                          disabled={submitting}
+                        >
+                          <Text style={styles.actionBtnText}>🤝 Accept Custody</Text>
                         </TouchableOpacity>
                       )}
 
                       {(activeJob.status === DeviceStatus.ACCEPTED_BY_TECHNICIAN ||
                         activeJob.status === DeviceStatus.ON_HOLD ||
                         activeJob.status === DeviceStatus.RETURN_TO_TECHNICIAN) && (
-                        <TouchableOpacity style={styles.actionBtnPrimary} onPress={() => handleAction('start')}>
-                          <Text style={styles.actionBtnText}>Start Repair Work</Text>
+                        <TouchableOpacity
+                          style={styles.actionBtnPrimary}
+                          onPress={() => handleAction('start')}
+                          disabled={submitting}
+                        >
+                          <Text style={styles.actionBtnText}>▶️ Start Repair Work</Text>
                         </TouchableOpacity>
                       )}
 
@@ -183,28 +381,29 @@ export const MyRepairsScreen: React.FC = () => {
                             style={styles.actionBtnSuccess}
                             onPress={() => setModalAction('submit-qc')}
                           >
-                            <Text style={styles.actionBtnText}>Complete & Submit to QC</Text>
+                            <Text style={styles.actionBtnText}>✅ Complete & Submit to QC</Text>
                           </TouchableOpacity>
 
                           <TouchableOpacity
                             style={styles.actionBtnWarning}
                             onPress={() => setModalAction('parts-required')}
                           >
-                            <Text style={styles.actionBtnText}>Request Parts</Text>
+                            <Text style={styles.actionBtnText}>📦 Request Parts</Text>
                           </TouchableOpacity>
 
                           <TouchableOpacity
                             style={styles.actionBtnSecondary}
                             onPress={() => handleAction('hold')}
+                            disabled={submitting}
                           >
-                            <Text style={styles.actionBtnText}>Put on Hold</Text>
+                            <Text style={styles.actionBtnText}>⏸️ Put on Hold</Text>
                           </TouchableOpacity>
 
                           <TouchableOpacity
                             style={styles.actionBtnDanger}
                             onPress={() => setModalAction('not-possible')}
                           >
-                            <Text style={styles.actionBtnText}>Mark Not Possible</Text>
+                            <Text style={styles.actionBtnText}>❌ Mark Not Possible (BER)</Text>
                           </TouchableOpacity>
                         </>
                       )}
@@ -214,8 +413,9 @@ export const MyRepairsScreen: React.FC = () => {
                   {/* Form for Submit to QC */}
                   {modalAction === 'submit-qc' && (
                     <View style={styles.formContainer}>
-                      <Text style={styles.formTitle}>QC Submission Form</Text>
-                      <Text style={styles.label}>Diagnosis *</Text>
+                      <Text style={styles.formTitle}>Submit Repaired Board to QC</Text>
+                      
+                      <Text style={styles.label}>Diagnosis (Problem Found) *</Text>
                       <TextInput
                         style={styles.input}
                         placeholder="e.g. Short on VDD_MAIN line capacitor"
@@ -223,7 +423,8 @@ export const MyRepairsScreen: React.FC = () => {
                         value={diagnosis}
                         onChangeText={setDiagnosis}
                       />
-                      <Text style={styles.label}>Work Performed *</Text>
+
+                      <Text style={styles.label}>Work Performed (Kiya Kiya) *</Text>
                       <TextInput
                         style={styles.input}
                         placeholder="e.g. Removed shorted C3100, reballed PMIC"
@@ -231,21 +432,43 @@ export const MyRepairsScreen: React.FC = () => {
                         value={workPerformed}
                         onChangeText={setWorkPerformed}
                       />
-                      <Text style={styles.label}>Repair Notes *</Text>
+
+                      <Text style={styles.label}>Parts Replaced / Added (Optional)</Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="e.g. U3300 IC, Resistor 100k, Jumper wire"
+                        placeholderTextColor={colors.textMuted}
+                        value={componentsReplaced}
+                        onChangeText={setComponentsReplaced}
+                      />
+
+                      <Text style={styles.label}>Repair Notes for QC Inspector *</Text>
                       <TextInput
                         style={[styles.input, { minHeight: 60 }]}
-                        placeholder="Complete notes for QC inspector..."
+                        placeholder="Full technical notes for testing..."
                         placeholderTextColor={colors.textMuted}
                         multiline
                         value={notes}
                         onChangeText={setNotes}
                       />
+
                       <TouchableOpacity
                         style={styles.actionBtnSuccess}
                         onPress={() => handleAction('submit-qc')}
                         disabled={submitting}
                       >
-                        {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Confirm QC Submission</Text>}
+                        {submitting ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text style={styles.actionBtnText}>🚀 Confirm Submission to QC</Text>
+                        )}
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.actionBtnSecondary, { marginTop: 8 }]}
+                        onPress={() => setModalAction(null)}
+                      >
+                        <Text style={styles.actionBtnText}>Back</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -267,7 +490,17 @@ export const MyRepairsScreen: React.FC = () => {
                         onPress={() => handleAction('not-possible')}
                         disabled={submitting}
                       >
-                        {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Confirm Not Possible</Text>}
+                        {submitting ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text style={styles.actionBtnText}>Confirm Not Possible</Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.actionBtnSecondary, { marginTop: 8 }]}
+                        onPress={() => setModalAction(null)}
+                      >
+                        <Text style={styles.actionBtnText}>Back</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -289,7 +522,17 @@ export const MyRepairsScreen: React.FC = () => {
                         onPress={() => handleAction('parts-required')}
                         disabled={submitting}
                       >
-                        {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Submit Parts Request</Text>}
+                        {submitting ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text style={styles.actionBtnText}>Submit Parts Request</Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.actionBtnSecondary, { marginTop: 8 }]}
+                        onPress={() => setModalAction(null)}
+                      >
+                        <Text style={styles.actionBtnText}>Back</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -304,7 +547,7 @@ export const MyRepairsScreen: React.FC = () => {
                 setActiveJob(null);
               }}
             >
-              <Text style={styles.closeBtnText}>Close</Text>
+              <Text style={styles.closeBtnText}>Close Window</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -318,25 +561,132 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  content: {
-    padding: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: 110,
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
   },
-  screenTitle: {
+  headerTitle: {
     fontSize: 22,
     fontWeight: '800',
     color: colors.textPrimary,
-    marginTop: spacing.xs,
-    marginBottom: spacing.md,
+  },
+  headerSubtitle: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  liveSyncBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#22c55e',
+    marginRight: 5,
+  },
+  liveText: {
+    color: '#22c55e',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  segmentedContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: spacing.md,
+    marginVertical: spacing.sm,
+    gap: 6,
+  },
+  segmentBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  segmentBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  segmentText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  segmentTextActive: {
+    color: '#fff',
+    fontWeight: '800',
+  },
+  handoverBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: borderRadius.md,
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.xs,
+    padding: spacing.sm,
+    gap: 8,
+  },
+  handoverBannerTitle: {
+    color: colors.primaryLight,
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  handoverBannerSub: {
+    color: colors.textSecondary,
+    fontSize: 11,
+  },
+  handoverAcceptAllBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  handoverAcceptAllText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  content: {
+    padding: spacing.md,
+    paddingTop: spacing.xs,
+    paddingBottom: 110,
   },
   emptyContainer: {
     padding: spacing.xl,
     alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 40,
+  },
+  emptyIcon: {
+    fontSize: 40,
+    marginBottom: 8,
+  },
+  emptyTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
   },
   emptyText: {
     color: colors.textSecondary,
-    fontSize: 15,
+    fontSize: 13,
+    textAlign: 'center',
   },
   jobCard: {
     backgroundColor: colors.surface,
@@ -366,17 +716,24 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   returnBadge: {
-    backgroundColor: colors.dangerBackground,
-    paddingVertical: 3,
-    paddingHorizontal: 6,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: colors.danger,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
     borderRadius: 4,
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
     marginVertical: 6,
   },
   returnBadgeText: {
     color: colors.danger,
     fontSize: 11,
     fontWeight: '800',
+  },
+  returnSubText: {
+    color: colors.textPrimary,
+    fontSize: 10,
+    marginTop: 2,
   },
   cardFooter: {
     flexDirection: 'row',
@@ -389,15 +746,43 @@ const styles = StyleSheet.create({
   jobNumber: {
     fontSize: 12,
     color: colors.textSecondary,
+    fontWeight: '600',
   },
   priorityText: {
     fontSize: 12,
     color: colors.warning,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  inlineActionRow: {
+    marginTop: 10,
+  },
+  quickAcceptBtn: {
+    backgroundColor: colors.primary,
+    paddingVertical: 10,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+  },
+  quickAcceptText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  manageBtn: {
+    backgroundColor: colors.surfaceElevated,
+    paddingVertical: 8,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  manageBtnText: {
+    color: colors.primaryLight,
+    fontWeight: '700',
+    fontSize: 12,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'center',
     padding: spacing.md,
   },
@@ -405,22 +790,22 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: borderRadius.lg,
     padding: spacing.lg,
-    maxHeight: '85%',
+    maxHeight: '88%',
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
   },
   modalTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '800',
     color: colors.textPrimary,
   },
   modalSubtitle: {
-    fontSize: 13,
+    fontSize: 12,
     color: colors.textSecondary,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
   historyBox: {
-    backgroundColor: colors.dangerBackground,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
     padding: spacing.sm,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
@@ -429,13 +814,14 @@ const styles = StyleSheet.create({
   },
   historyBoxTitle: {
     color: colors.danger,
-    fontWeight: '700',
+    fontWeight: '800',
     fontSize: 12,
-    marginBottom: 2,
+    marginBottom: 4,
   },
   historyText: {
     color: colors.textPrimary,
-    fontSize: 12,
+    fontSize: 11,
+    marginBottom: 2,
   },
   actionsContainer: {
     gap: 8,
@@ -464,6 +850,8 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: borderRadius.md,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   actionBtnDanger: {
     backgroundColor: colors.danger,
@@ -474,7 +862,7 @@ const styles = StyleSheet.create({
   actionBtnText: {
     color: '#fff',
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 13,
   },
   closeBtn: {
     marginTop: spacing.md,
@@ -484,19 +872,21 @@ const styles = StyleSheet.create({
   closeBtnText: {
     color: colors.textSecondary,
     fontWeight: '600',
+    fontSize: 13,
   },
   formContainer: {
     marginTop: spacing.sm,
   },
   formTitle: {
     color: colors.primaryLight,
-    fontWeight: '700',
+    fontWeight: '800',
     fontSize: 15,
     marginBottom: spacing.sm,
   },
   label: {
     color: colors.textSecondary,
     fontSize: 12,
+    fontWeight: '600',
     marginBottom: 4,
   },
   input: {
@@ -504,7 +894,9 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     borderRadius: borderRadius.sm,
     padding: 10,
-    fontSize: 14,
+    fontSize: 13,
     marginBottom: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
 });

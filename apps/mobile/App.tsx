@@ -13,6 +13,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from './src/store/authStore';
 import { colors, spacing } from './src/theme/colors';
+import { UserRole } from './src/shared';
 
 // Screens
 import { AuthScreen } from './src/screens/AuthScreen';
@@ -35,9 +36,15 @@ const queryClient = new QueryClient({
 type Tab = 'dashboard' | 'intake' | 'repairs' | 'qc' | 'search' | 'team';
 
 function MainApp() {
-  const { isAuthenticated, isLoading, initAuth } = useAuthStore();
+  const { isAuthenticated, isLoading, initAuth, user } = useAuthStore();
   const [currentTab, setCurrentTab] = useState<Tab>('dashboard');
   const insets = useSafeAreaInsets();
+
+  const role = user?.role || UserRole.VIEWER;
+  const isHardwareTech = role === UserRole.BOARD_TECHNICIAN;
+  const isQCTech = role === UserRole.QC_TECHNICIAN;
+  const isOwnerOrManager =
+    role === UserRole.LAB_OWNER || role === UserRole.LAB_MANAGER || role === UserRole.SUPER_ADMIN;
 
   const topInset = Math.max(insets.top, Platform.OS === 'android' ? (NativeStatusBar.currentHeight || 28) : 0);
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 12);
@@ -45,6 +52,19 @@ function MainApp() {
   useEffect(() => {
     initAuth();
   }, []);
+
+  // Set default starting tab strictly based on user role
+  useEffect(() => {
+    if (isHardwareTech) {
+      if (currentTab !== 'repairs' && currentTab !== 'search' && currentTab !== 'dashboard') {
+        setCurrentTab('repairs');
+      }
+    } else if (isQCTech) {
+      if (currentTab !== 'intake' && currentTab !== 'qc' && currentTab !== 'search' && currentTab !== 'dashboard') {
+        setCurrentTab('intake');
+      }
+    }
+  }, [role]);
 
   if (isLoading) {
     return (
@@ -65,62 +85,133 @@ function MainApp() {
         {/* Active Tab Screen */}
         <View style={styles.screenContainer}>
           {currentTab === 'dashboard' && <DashboardScreen />}
-          {currentTab === 'intake' && <NewDeviceIntakeScreen onSuccess={() => setCurrentTab('repairs')} />}
+          {currentTab === 'intake' && <NewDeviceIntakeScreen onSuccess={() => setCurrentTab('qc')} />}
           {currentTab === 'repairs' && <MyRepairsScreen />}
           {currentTab === 'qc' && <QCScreen />}
           {currentTab === 'search' && <IMEISearchScreen />}
           {currentTab === 'team' && <TeamScreen />}
         </View>
 
-        {/* Bottom Tab Bar with Safe Area margin */}
+        {/* Bottom Tab Bar (Strictly Role-Tailored: Zero Interference) */}
         <View style={[styles.tabBar, { paddingBottom: bottomInset, minHeight: 56 + bottomInset }]}>
-          <TouchableOpacity
-            style={[styles.tabItem, currentTab === 'dashboard' && styles.activeTabItem]}
-            onPress={() => setCurrentTab('dashboard')}
-          >
-            <Text style={styles.tabIcon}>📊</Text>
-            <Text style={[styles.tabLabel, currentTab === 'dashboard' && styles.activeTabLabel]}>Home</Text>
-          </TouchableOpacity>
+          {/* Owner / Manager Master Tabs */}
+          {isOwnerOrManager && (
+            <>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'dashboard' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('dashboard')}
+              >
+                <Text style={styles.tabIcon}>📊</Text>
+                <Text style={[styles.tabLabel, currentTab === 'dashboard' && styles.activeTabLabel]}>Home</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.tabItem, currentTab === 'intake' && styles.activeTabItem]}
-            onPress={() => setCurrentTab('intake')}
-          >
-            <Text style={styles.tabIcon}>➕</Text>
-            <Text style={[styles.tabLabel, currentTab === 'intake' && styles.activeTabLabel]}>Intake</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'intake' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('intake')}
+              >
+                <Text style={styles.tabIcon}>📦</Text>
+                <Text style={[styles.tabLabel, currentTab === 'intake' && styles.activeTabLabel]}>Intake</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.tabItem, currentTab === 'repairs' && styles.activeTabItem]}
-            onPress={() => setCurrentTab('repairs')}
-          >
-            <Text style={styles.tabIcon}>🔧</Text>
-            <Text style={[styles.tabLabel, currentTab === 'repairs' && styles.activeTabLabel]}>Repairs</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'repairs' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('repairs')}
+              >
+                <Text style={styles.tabIcon}>🔧</Text>
+                <Text style={[styles.tabLabel, currentTab === 'repairs' && styles.activeTabLabel]}>Repairs</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.tabItem, currentTab === 'qc' && styles.activeTabItem]}
-            onPress={() => setCurrentTab('qc')}
-          >
-            <Text style={styles.tabIcon}>✅</Text>
-            <Text style={[styles.tabLabel, currentTab === 'qc' && styles.activeTabLabel]}>QC</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'qc' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('qc')}
+              >
+                <Text style={styles.tabIcon}>✅</Text>
+                <Text style={[styles.tabLabel, currentTab === 'qc' && styles.activeTabLabel]}>QC</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.tabItem, currentTab === 'search' && styles.activeTabItem]}
-            onPress={() => setCurrentTab('search')}
-          >
-            <Text style={styles.tabIcon}>🔍</Text>
-            <Text style={[styles.tabLabel, currentTab === 'search' && styles.activeTabLabel]}>Search</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'search' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('search')}
+              >
+                <Text style={styles.tabIcon}>🔍</Text>
+                <Text style={[styles.tabLabel, currentTab === 'search' && styles.activeTabLabel]}>Search</Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.tabItem, currentTab === 'team' && styles.activeTabItem]}
-            onPress={() => setCurrentTab('team')}
-          >
-            <Text style={styles.tabIcon}>👥</Text>
-            <Text style={[styles.tabLabel, currentTab === 'team' && styles.activeTabLabel]}>Team</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'team' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('team')}
+              >
+                <Text style={styles.tabIcon}>👥</Text>
+                <Text style={[styles.tabLabel, currentTab === 'team' && styles.activeTabLabel]}>Team</Text>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {/* Dedicated Hardware / Board Technician Tabs (Zero interference from QC/Intake) */}
+          {isHardwareTech && (
+            <>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'repairs' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('repairs')}
+              >
+                <Text style={styles.tabIcon}>🔧</Text>
+                <Text style={[styles.tabLabel, currentTab === 'repairs' && styles.activeTabLabel]}>Workbench</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'search' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('search')}
+              >
+                <Text style={styles.tabIcon}>🔍</Text>
+                <Text style={[styles.tabLabel, currentTab === 'search' && styles.activeTabLabel]}>Search</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'dashboard' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('dashboard')}
+              >
+                <Text style={styles.tabIcon}>👤</Text>
+                <Text style={[styles.tabLabel, currentTab === 'dashboard' && styles.activeTabLabel]}>My Stats</Text>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {/* Dedicated QC Technician Tabs (Zero interference from Hardware Workbench) */}
+          {isQCTech && (
+            <>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'intake' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('intake')}
+              >
+                <Text style={styles.tabIcon}>📦</Text>
+                <Text style={[styles.tabLabel, currentTab === 'intake' && styles.activeTabLabel]}>Stock & Intake</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'qc' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('qc')}
+              >
+                <Text style={styles.tabIcon}>✅</Text>
+                <Text style={[styles.tabLabel, currentTab === 'qc' && styles.activeTabLabel]}>QC Testing</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'search' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('search')}
+              >
+                <Text style={styles.tabIcon}>🔍</Text>
+                <Text style={[styles.tabLabel, currentTab === 'search' && styles.activeTabLabel]}>Search</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'dashboard' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('dashboard')}
+              >
+                <Text style={styles.tabIcon}>📊</Text>
+                <Text style={[styles.tabLabel, currentTab === 'dashboard' && styles.activeTabLabel]}>QC Overview</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
     </View>

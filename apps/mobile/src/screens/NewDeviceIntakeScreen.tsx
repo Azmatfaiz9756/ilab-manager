@@ -30,6 +30,11 @@ interface BatchDeviceItem {
   waterDamageStatus: boolean;
   priority: DevicePriority;
   initialNotes?: string;
+  isReturnClaim?: boolean;
+  claimType?: string;
+  previousJobNumber?: string;
+  previousTechName?: string;
+  previousDiagnosis?: string;
 }
 
 export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
@@ -121,8 +126,8 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     setDefaultModelId(iphone12 ? iphone12.id : models[0].id);
   }
 
-  // Helper to add IMEI into batch
-  const addImeiToBatch = (rawImei: string): boolean => {
+  // Helper to add IMEI into batch with Auto-Return Claim check
+  const addImeiToBatch = async (rawImei: string): Promise<boolean> => {
     const clean = rawImei.trim();
     if (!clean) return false;
 
@@ -138,6 +143,49 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
       return false;
     }
 
+    // Auto-Return Claim Live Detection
+    let isReturn = false;
+    let claimTypeStr = '';
+    let prevJobNum = '';
+    let prevTech = '';
+    let prevDiag = '';
+
+    try {
+      const checkRes = await apiRequest('/devices/check-imei', {
+        method: 'POST',
+        body: JSON.stringify({
+          imei: clean,
+          faultIds: defaultFaultIds,
+          customFaults: defaultCustomFaults,
+        }),
+      });
+
+      if (checkRes.success && checkRes.data) {
+        if (checkRes.data.isInLabNow) {
+          Alert.alert(
+            'Device Already in Lab',
+            `IMEI ${clean} is currently active in the lab (Job: ${checkRes.data.currentActiveJob?.jobNumber}, Status: ${checkRes.data.currentActiveJob?.status}).`
+          );
+        }
+
+        const evaluation = checkRes.data.evaluation;
+        if (evaluation && evaluation.isReturnClaim) {
+          isReturn = true;
+          claimTypeStr = evaluation.claimType || 'SAME_FAULT';
+          prevJobNum = evaluation.previousRepairJob?.jobNumber || '';
+          prevTech = evaluation.previousRepairJob?.technicianName || '';
+          prevDiag = evaluation.previousRepairJob?.diagnosis || '';
+
+          Alert.alert(
+            '🔴 RETURN CLAIM DETECTED',
+            `IMEI: ${clean}\n\nThis phone was repaired before in this lab!\n• Previous Job: ${prevJobNum}\n• Technician: ${prevTech}\n• Diagnosis: ${prevDiag}\n\nAuto-flagged with Return Claim & URGENT priority.`
+          );
+        }
+      }
+    } catch {
+      // Offline fallback: continue smoothly
+    }
+
     const modelObj = models.find((m: any) => m.id === defaultModelId) || models[0];
     const newItem: BatchDeviceItem = {
       id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
@@ -147,12 +195,21 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
       faultIds: [...defaultFaultIds],
       customFaults: [...defaultCustomFaults],
       waterDamageStatus: false,
-      priority: defaultPriority,
+      priority: isReturn ? DevicePriority.URGENT : defaultPriority,
+      isReturnClaim: isReturn,
+      claimType: claimTypeStr,
+      previousJobNumber: prevJobNum,
+      previousTechName: prevTech,
+      previousDiagnosis: prevDiag,
     };
 
     setBatchItems((prev) => [newItem, ...prev]);
-    setScannerFeedbackBanner(`✅ Added Device #${batchItems.length + 1}: ${clean}`);
-    setTimeout(() => setScannerFeedbackBanner(null), 2500);
+    setScannerFeedbackBanner(
+      isReturn
+        ? `🔴 RETURN CLAIM: ${clean} (${prevTech})`
+        : `✅ Added Device #${batchItems.length + 1}: ${clean}`
+    );
+    setTimeout(() => setScannerFeedbackBanner(null), 3000);
     return true;
   };
 
@@ -706,9 +763,10 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
               />
               <TouchableOpacity
                 style={styles.addManualBtn}
-                onPress={() => {
+                onPress={async () => {
                   if (manualImeiInput.trim().length === 15) {
-                    if (addImeiToBatch(manualImeiInput.trim())) {
+                    const success = await addImeiToBatch(manualImeiInput.trim());
+                    if (success) {
                       setManualImeiInput('');
                     }
                   } else {
@@ -774,6 +832,18 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                         <Text style={styles.deleteRowBtnText}>🗑️</Text>
                       </TouchableOpacity>
                     </View>
+
+                    {/* Auto-Return Claim Alert Banner on Row */}
+                    {item.isReturnClaim && (
+                      <View style={styles.returnClaimRowBadge}>
+                        <Text style={styles.returnClaimRowBadgeText}>
+                          🔴 RETURN CLAIM ({item.claimType || 'SAME FAULT'})
+                        </Text>
+                        <Text style={styles.returnClaimRowBadgeSub}>
+                          Prev Job: {item.previousJobNumber || 'N/A'} • Tech: {item.previousTechName || 'N/A'}{item.previousDiagnosis ? ` • Diagnosis: ${item.previousDiagnosis}` : ''}
+                        </Text>
+                      </View>
+                    )}
 
                     {/* Faults Tags on this row */}
                     <View style={styles.rowFaultsWrap}>
@@ -1866,6 +1936,24 @@ const styles = StyleSheet.create({
   },
   deleteRowBtnText: {
     fontSize: 16,
+  },
+  returnClaimRowBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderRadius: borderRadius.sm,
+    padding: 6,
+    marginVertical: 4,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  returnClaimRowBadgeText: {
+    color: colors.danger,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  returnClaimRowBadgeSub: {
+    color: colors.textSecondary,
+    fontSize: 10,
+    marginTop: 2,
   },
   rowFaultsWrap: {
     flexDirection: 'row',
