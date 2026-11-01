@@ -359,6 +359,17 @@ router.get('/dispatch-list', authenticateToken, requireLabTenant, async (req: Au
     where.status = {
       in: [DeviceStatus.QC_PASSED, DeviceStatus.READY_FOR_DISPATCH, DeviceStatus.REPAIR_NOT_POSSIBLE],
     };
+  } else if (status === 'SENT_TO_TECH') {
+    where.status = {
+      in: [
+        DeviceStatus.ASSIGNED_TO_TECHNICIAN,
+        DeviceStatus.ACCEPTED_BY_TECHNICIAN,
+        DeviceStatus.REPAIR_IN_PROGRESS,
+        DeviceStatus.ON_HOLD,
+        DeviceStatus.PARTS_REQUIRED,
+        DeviceStatus.RETURN_TO_TECHNICIAN,
+      ],
+    };
   } else if (status && status !== 'ALL') {
     where.status = status as DeviceStatus;
   }

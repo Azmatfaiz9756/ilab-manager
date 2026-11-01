@@ -15,8 +15,8 @@ interface RecordMovementParams {
 /**
  * Creates an immutable movement record whenever a device changes location or holder
  */
-export async function recordDeviceMovement(params: RecordMovementParams) {
-  const movement = await prisma.deviceMovement.create({
+export async function recordDeviceMovement(params: RecordMovementParams, client: any = prisma) {
+  const movement = await client.deviceMovement.create({
     data: {
       labId: params.labId,
       deviceId: params.deviceId,
@@ -30,7 +30,7 @@ export async function recordDeviceMovement(params: RecordMovementParams) {
   });
 
   // Update current department and holder on device
-  await prisma.device.update({
+  await client.device.update({
     where: { id: params.deviceId },
     data: {
       currentDepartment: params.toDepartment,

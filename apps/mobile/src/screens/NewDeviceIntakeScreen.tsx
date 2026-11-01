@@ -11,6 +11,7 @@ import {
   Modal,
   Switch,
   FlatList,
+  RefreshControl,
 } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -40,8 +41,17 @@ interface BatchDeviceItem {
 export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const queryClient = useQueryClient();
 
-  // Top Operations Segment: 'intake' | 'dispatch' | 'history'
-  const [activeSegment, setActiveSegment] = useState<'intake' | 'dispatch' | 'history'>('intake');
+  // Top Operations Segment: 'intake' | 'sent_to_tech' | 'dispatch' | 'history'
+  const [activeSegment, setActiveSegment] = useState<'intake' | 'sent_to_tech' | 'dispatch' | 'history'>('intake');
+
+  // Sent to Technician search
+  const [sentSearchQuery, setSentSearchQuery] = useState('');
+  const { data: sentData, isLoading: sentLoading, refetch: refetchSent } = useQuery({
+    queryKey: ['sent_to_tech_jobs'],
+    queryFn: () => apiRequest('/repairs/dispatch-list?status=SENT_TO_TECH'),
+    refetchInterval: 4000,
+  });
+  const sentJobs = sentData?.data || [];
 
   // Intake Mode: 'batch' | 'single'
   const [intakeMode, setIntakeMode] = useState<'batch' | 'single'>('batch');
@@ -275,22 +285,36 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
       if (res.success) {
         const { totalSuccess, totalFailed, created, failed } = res.data;
+        const assignedTechObj = technicians.find((t: any) => t.id === assignedTechId);
+        const assignedTechName = assignedTechObj?.name || 'Hardware Technician';
+
+        let alertTitle = 'Batch Intake Complete';
         let msg = `Successfully registered ${totalSuccess} devices!\n`;
+
+        if (assignedTechId) {
+          alertTitle = '🚀 Sent to Technician';
+          msg = `✅ ${totalSuccess} Phones sent to Hardware Technician (${assignedTechName})!\n\nStatus: Sent to Technician (Awaiting Handover)\nTechnician ke [📥 Incoming] workbench me handover accept karne ke liye bhej diye gaye hain.\n`;
+        }
+
         if (created.length > 0) {
-          msg += `Jobs Created: ${created.slice(0, 3).map((c: any) => c.jobNumber).join(', ')}${created.length > 3 ? ` ...and ${created.length - 3} more` : ''}\n`;
+          msg += `\nJobs Created: ${created.slice(0, 3).map((c: any) => c.jobNumber).join(', ')}${created.length > 3 ? ` ...and ${created.length - 3} more` : ''}\n`;
         }
         if (totalFailed > 0) {
           msg += `\n⚠️ Skipped ${totalFailed} duplicate/invalid devices:\n${failed.map((f: any) => `${f.imei}: ${f.error}`).join('\n')}`;
         }
 
-        Alert.alert('Batch Intake Complete', msg, [
+        Alert.alert(alertTitle, msg, [
           {
-            text: 'OK',
+            text: assignedTechId ? 'View Sent Phones ➔' : 'OK',
             onPress: () => {
               setBatchItems([]);
               setBatchName('');
+              queryClient.invalidateQueries({ queryKey: ['sent_to_tech_jobs'] });
               queryClient.invalidateQueries({ queryKey: ['my_repairs_list'] });
               queryClient.invalidateQueries({ queryKey: ['dashboard_metrics'] });
+              if (assignedTechId) {
+                setActiveSegment('sent_to_tech');
+              }
               onSuccess?.();
             },
           },
@@ -456,7 +480,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
   return (
     <View style={styles.container}>
-      {/* 1. TOP SEGMENT TABS (Intake | Return/Wapsi | History) */}
+      {/* 1. TOP SEGMENT TABS (Intake | Sent to Tech | Return/Wapsi | History) */}
       <View style={styles.topSegmentBar}>
         <TouchableOpacity
           style={[styles.segmentBtn, activeSegment === 'intake' && styles.segmentBtnActive]}
@@ -464,6 +488,15 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
         >
           <Text style={[styles.segmentText, activeSegment === 'intake' && styles.segmentTextActive]}>
             📥 Intake Hub
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeSegment === 'sent_to_tech' && styles.segmentBtnActive]}
+          onPress={() => setActiveSegment('sent_to_tech')}
+        >
+          <Text style={[styles.segmentText, activeSegment === 'sent_to_tech' && styles.segmentTextActive]}>
+            🚀 Sent to Tech ({sentJobs.length})
           </Text>
         </TouchableOpacity>
 
@@ -914,12 +947,112 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <Text style={styles.submitBatchBtnText}>
-                    🚀 Submit Batch Intake ({batchItems.length} Phones)
+                    {assignedTechId
+                      ? `🚀 Send ${batchItems.length} Phones to ${technicians.find((t: any) => t.id === assignedTechId)?.name || 'Technician'}`
+                      : `📥 Register ${batchItems.length} Phones in Intake`}
                   </Text>
                 )}
               </TouchableOpacity>
             )}
           </View>
+        </ScrollView>
+      )}
+
+      {/* ======================================================== */}
+      {/* TAB 1.5: SENT TO TECHNICIAN (LIVE WORKBENCH TRACKING)    */}
+      {/* ======================================================== */}
+      {activeSegment === 'sent_to_tech' && (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl refreshing={sentLoading} onRefresh={() => { refetchSent(); }} tintColor={colors.primaryLight} />
+          }
+        >
+          <View style={styles.filterCard}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.cardHeaderTitle}>🚀 Phones with Hardware Technicians</Text>
+              <View style={styles.badgeLive}>
+                <Text style={styles.badgeLiveText}>{sentJobs.length} Active</Text>
+              </View>
+            </View>
+            <Text style={styles.presetHint}>Live tracking: Handover pending, board repairs, and parts status</Text>
+            <TextInput
+              style={styles.returnSearchInput}
+              placeholder="Search by IMEI, Model, Tech Name, Job #..."
+              placeholderTextColor={colors.textMuted}
+              value={sentSearchQuery}
+              onChangeText={setSentSearchQuery}
+            />
+          </View>
+
+          {sentJobs.length === 0 && !sentLoading ? (
+            <View style={styles.emptyContainer}>
+              <Text style={{ fontSize: 36, marginBottom: 8 }}>📋</Text>
+              <Text style={styles.emptyTitle}>No Phones Currently with Technicians</Text>
+              <Text style={styles.emptyText}>
+                When phones are assigned to Hardware Techs, they will appear here with live tracking.
+              </Text>
+            </View>
+          ) : (
+            sentJobs
+              .filter((job: any) => {
+                if (!sentSearchQuery.trim()) return true;
+                const q = sentSearchQuery.toLowerCase();
+                const model = job.device?.model?.name?.toLowerCase() || '';
+                const jn = job.jobNumber?.toLowerCase() || '';
+                const tech = job.assignments?.[0]?.technician?.name?.toLowerCase() || '';
+                const imeis = job.device?.imeis?.map((i: any) => i.imei).join(' ') || '';
+                return model.includes(q) || jn.includes(q) || tech.includes(q) || imeis.includes(q);
+              })
+              .map((job: any) => {
+                const dev = job.device || {};
+                const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
+                const techName = job.assignments?.[0]?.technician?.name || 'Assigned Technician';
+                const isHandoverPending = job.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN;
+
+                return (
+                  <View key={job.id} style={styles.sentCard}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <View style={{ flex: 1, marginRight: 8 }}>
+                        <Text style={styles.sentModelName}>{dev.model?.name || 'iPhone'}</Text>
+                        <Text style={styles.sentImei}>IMEI: {primaryImei}</Text>
+                      </View>
+                      <StatusBadge status={job.status} />
+                    </View>
+
+                    <View style={styles.techHolderRow}>
+                      <Text style={styles.techHolderLabel}>👤 Technician:</Text>
+                      <Text style={styles.techHolderName}>{techName}</Text>
+                      {isHandoverPending && (
+                        <View style={styles.handoverPendingBadge}>
+                          <Text style={styles.handoverPendingBadgeText}>🤝 Handover Pending</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {dev.faults && dev.faults.length > 0 && (
+                      <View style={styles.rowFaultsWrap}>
+                        {dev.faults.map((f: any) => (
+                          <View key={f.id} style={styles.rowFaultChip}>
+                            <Text style={styles.rowFaultText}>
+                              {f.fault?.name || f.customFaultName || 'Fault'}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                    <View style={styles.cardFooter}>
+                      <Text style={styles.jobNumber}>Job #{job.jobNumber}</Text>
+                      <Text style={[styles.priorityText, dev.priority === 'URGENT' && { color: colors.danger }]}>
+                        {dev.priority || 'NORMAL'}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })
+          )}
         </ScrollView>
       )}
 
@@ -2045,6 +2178,90 @@ const styles = StyleSheet.create({
   filterChipTextSelected: {
     color: '#fff',
     fontWeight: '800',
+  },
+  sentCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  sentModelName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  sentImei: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  techHolderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.xs,
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  techHolderLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  techHolderName: {
+    color: colors.primaryLight,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  handoverPendingBadge: {
+    backgroundColor: 'rgba(234, 179, 8, 0.15)',
+    borderWidth: 1,
+    borderColor: '#eab308',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+  },
+  handoverPendingBadgeText: {
+    color: '#eab308',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  badgeLive: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  badgeLiveText: {
+    color: colors.primaryLight,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  emptyTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  cardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.surfaceBorder,
+    paddingTop: spacing.xs,
+  },
+  jobNumber: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontWeight: '600',
+  },
+  priorityText: {
+    fontSize: 12,
+    color: colors.warning,
+    fontWeight: '700',
   },
   returnSearchInput: {
     backgroundColor: colors.surfaceElevated,

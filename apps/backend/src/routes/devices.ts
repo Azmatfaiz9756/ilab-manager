@@ -531,15 +531,18 @@ router.post('/bulk-intake', authenticateToken, requireLabTenant, async (req: Aut
             });
           }
 
-          await recordDeviceMovement({
-            labId,
-            deviceId,
-            fromDepartment: Department.INTAKE,
-            toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
-            fromUserId: currentUserId,
-            toUserId: input.assignedTechnicianId || null,
-            reason: input.batchName ? `Batch Intake: ${input.batchName}` : 'Bulk Intake',
-          });
+          await recordDeviceMovement(
+            {
+              labId,
+              deviceId,
+              fromDepartment: Department.INTAKE,
+              toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
+              fromUserId: currentUserId,
+              toUserId: input.assignedTechnicianId || null,
+              reason: input.batchName ? `Batch Intake: ${input.batchName}` : 'Bulk Intake',
+            },
+            tx
+          );
 
           return { deviceId, jobNumber, modelName: modelMap.get(item.modelId) || 'iPhone' };
         });
