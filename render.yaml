@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: ilab-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install && cd packages/shared && npm run build && cd ../../apps/backend && npx prisma generate && npm run build
+    startCommand: cd apps/backend && npx prisma db push && npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ilab-postgres
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        value: "*"
+
+databases:
+  - name: ilab-postgres
+    plan: free
+    databaseName: ilab_manager
+    user: ilab_user

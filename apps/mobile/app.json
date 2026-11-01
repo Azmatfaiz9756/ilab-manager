@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "iLab Manager",
+    "slug": "ilab-manager",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ilabmanager.app"
+    },
+    "android": {
+      "package": "com.ilabmanager.app",
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F19",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png"
+      },
+      "permissions": [
+        "CAMERA"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "34446d73-6202-4c49-943f-9a2cdfe6de1e"
+      }
+    },
+    "owner": "azmatfaiz9756",
+    "plugins": [
+      "expo-secure-store",
+      "./plugins/withCleartextTraffic"
+    ]
+  }
+}

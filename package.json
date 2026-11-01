@@ -1,0 +1,12 @@
+{
+  "name": "ilab-manager",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run --workspaces --if-present build",
+    "test": "npm run --workspaces --if-present test"
+  }
+}

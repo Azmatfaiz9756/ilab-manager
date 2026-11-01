@@ -1,0 +1,111 @@
+import * as SecureStore from 'expo-secure-store';
+import { useAuthStore } from '../store/authStore';
+
+const SERVER_HOST_KEY = 'ilab_server_host';
+// Default to the Cloudflare secure HTTPS tunnel, with fallback to local LAN IP
+let currentServerHost = 'systematic-tommy-sim-with.trycloudflare.com';
+
+export async function initServerHost(): Promise<string> {
+  try {
+    const saved = await SecureStore.getItemAsync(SERVER_HOST_KEY);
+    if (saved) {
+      currentServerHost = saved;
+    }
+  } catch {}
+  return currentServerHost;
+}
+
+export async function setServerHost(host: string): Promise<void> {
+  currentServerHost = host.trim().replace(/\/$/, '');
+  await SecureStore.setItemAsync(SERVER_HOST_KEY, currentServerHost);
+}
+
+export function getServerUrl(): string {
+  if (currentServerHost.startsWith('http://') || currentServerHost.startsWith('https://')) {
+    return `${currentServerHost.replace(/\/$/, '')}/api`;
+  }
+  const isSecure = currentServerHost.includes('trycloudflare.com') || currentServerHost.includes('ngrok') || currentServerHost.includes('.com') || currentServerHost.includes('.app');
+  const protocol = isSecure ? 'https' : 'http';
+  return `${protocol}://${currentServerHost}/api`;
+}
+
+export function getCurrentHost(): string {
+  return currentServerHost;
+}
+
+interface RequestOptions extends RequestInit {
+  requiresAuth?: boolean;
+}
+
+export async function apiRequest<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+  const { requiresAuth = true, headers = {}, ...customConfig } = options;
+
+  const authStore = useAuthStore.getState();
+  const token = authStore.accessToken;
+  const labId = authStore.lab?.id;
+  const baseUrl = getServerUrl();
+
+  const requestHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(headers as Record<string, string>),
+  };
+
+  if (requiresAuth && token) {
+    requestHeaders['Authorization'] = `Bearer ${token}`;
+  }
+
+  if (labId) {
+    requestHeaders['x-lab-id'] = labId;
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}${endpoint}`, {
+      ...customConfig,
+      headers: requestHeaders,
+    });
+
+    // Handle Token Refresh if 401
+    if (response.status === 401 && requiresAuth && authStore.refreshToken) {
+      try {
+        const refreshRes = await fetch(`${baseUrl}/auth/refresh-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: authStore.refreshToken }),
+        });
+
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          await authStore.updateAccessToken(refreshData.data.accessToken);
+
+          requestHeaders['Authorization'] = `Bearer ${refreshData.data.accessToken}`;
+          const retryRes = await fetch(`${baseUrl}${endpoint}`, {
+            ...customConfig,
+            headers: requestHeaders,
+          });
+          return await retryRes.json();
+        } else {
+          await authStore.logout();
+          throw new Error('Session expired. Please sign in again.');
+        }
+      } catch (err) {
+        await authStore.logout();
+        throw err;
+      }
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || `Server responded with status ${response.status}`);
+    }
+
+    return data;
+  } catch (err: any) {
+    if (err.message && err.message.includes('Network request failed')) {
+      throw new Error(
+        `Cannot connect to Lab Server (${currentServerHost}). Check Wi-Fi or update Server IP in Sign In screen.`
+      );
+    }
+    throw err;
+  }
+}

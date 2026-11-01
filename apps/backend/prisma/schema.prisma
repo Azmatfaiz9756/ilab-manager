@@ -1,0 +1,508 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  LAB_OWNER
+  LAB_MANAGER
+  QC_TECHNICIAN
+  BOARD_TECHNICIAN
+  VIEWER
+}
+
+enum DeviceStatus {
+  RECEIVED
+  QC_INSPECTION
+  WAITING_FOR_ASSIGNMENT
+  ASSIGNED_TO_TECHNICIAN
+  ACCEPTED_BY_TECHNICIAN
+  REPAIR_IN_PROGRESS
+  ON_HOLD
+  PARTS_REQUIRED
+  REPAIR_COMPLETED
+  REPAIR_NOT_POSSIBLE
+  QC_PENDING
+  QC_FAILED
+  RETURN_TO_TECHNICIAN
+  QC_PASSED
+  READY_FOR_DISPATCH
+  DISPATCHED
+  RETURN_CLAIM
+  CANCELLED
+}
+
+enum DevicePriority {
+  NORMAL
+  URGENT
+}
+
+enum ReturnClaimType {
+  SAME_FAULT
+  DIFFERENT_FAULT
+  REPEAT_RETURN
+}
+
+enum ClaimReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum QCDecision {
+  QC_PASSED
+  QC_FAILED
+  RETURN_TO_TECHNICIAN
+  MANAGER_REVIEW_REQUIRED
+}
+
+enum Department {
+  INTAKE
+  QC
+  BOARD_REPAIR
+  PARTS_INVENTORY
+  FINAL_STOCK
+  DISPATCH
+}
+
+enum SubscriptionTier {
+  STARTER
+  PRO
+  BUSINESS
+  ENTERPRISE
+}
+
+model Lab {
+  id              String         @id @default(uuid())
+  name            String
+  slug            String         @unique
+  isActive        Boolean        @default(true)
+  settings        Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  subscription    Subscription?
+  memberships     LabMembership[]
+  devices         Device[]
+  repairJobs      RepairJob[]
+  faultCategories FaultCategory[]
+  faults          Fault[]
+  returnClaims    ReturnClaim[]
+  deviceMovements DeviceMovement[]
+  activityLogs    ActivityLog[]
+  auditLogs       AuditLog[]
+  notifications   Notification[]
+}
+
+model SubscriptionPlan {
+  id              String            @id @default(uuid())
+  name            String
+  tier            SubscriptionTier  @unique
+  maxEmployees    Int
+  maxMonthlyDevices Int
+  priceMonthly    Float
+  features        Json?
+  createdAt       DateTime          @default(now())
+
+  subscriptions   Subscription[]
+}
+
+model Subscription {
+  id              String            @id @default(uuid())
+  labId           String            @unique
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  planId          String
+  plan            SubscriptionPlan  @relation(fields: [planId], references: [id])
+  status          String            @default("ACTIVE")
+  currentPeriodStart DateTime       @default(now())
+  currentPeriodEnd   DateTime
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+}
+
+model User {
+  id              String            @id @default(uuid())
+  email           String            @unique
+  passwordHash    String
+  name            String
+  phone           String?
+  avatarUrl       String?
+  employeeId      String?
+  isSuperAdmin    Boolean           @default(false)
+  isActive        Boolean           @default(true)
+  refreshToken    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  memberships     LabMembership[]
+  assignedJobs    JobAssignment[]   @relation("AssignedTechnician")
+  assignedByJobs  JobAssignment[]   @relation("Assigner")
+  qcInspections   QCInspection[]
+  repairNotes     RepairNote[]
+  movementsFrom   DeviceMovement[]  @relation("MovementFromUser")
+  movementsTo     DeviceMovement[]  @relation("MovementToUser")
+  notifications   Notification[]
+  activityLogs    ActivityLog[]
+  auditLogs       AuditLog[]
+}
+
+model LabMembership {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role            UserRole          @default(VIEWER)
+  isActive        Boolean           @default(true)
+  joinedAt        DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@unique([labId, userId])
+  @@index([labId])
+  @@index([userId])
+}
+
+model DeviceModel {
+  id              String            @id @default(uuid())
+  family          String            // e.g., "iPhone 15 series"
+  name            String            @unique // e.g., "iPhone 15 Pro Max"
+  orderIndex      Int               @default(0)
+  imageUrl        String?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+
+  devices         Device[]
+}
+
+model Device {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  modelId         String
+  model           DeviceModel       @relation(fields: [modelId], references: [id])
+  serialNumber    String?
+  color           String?
+  storage         String?
+  physicalCondition String?
+  waterDamageStatus Boolean         @default(false)
+  receivedFrom    String?
+  supplierReference String?
+  priority        DevicePriority    @default(NORMAL)
+  currentStatus   DeviceStatus      @default(RECEIVED)
+  currentDepartment Department      @default(INTAKE)
+  currentHolderId String?
+  totalRepairCount Int              @default(1)
+  totalReturnCount Int              @default(0)
+  initialNotes    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  imeis           DeviceImei[]
+  faults          DeviceFault[]
+  repairJobs      RepairJob[]
+  movements       DeviceMovement[]
+  photos          DevicePhoto[]
+  returnClaims    ReturnClaim[]     @relation("DeviceReturnClaims")
+
+  @@index([labId])
+  @@index([modelId])
+  @@index([currentStatus])
+  @@index([currentDepartment])
+}
+
+model DeviceImei {
+  id              String            @id @default(uuid())
+  labId           String
+  deviceId        String
+  device          Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  imei            String            // normalized string
+  isPrimary       Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+
+  @@unique([labId, imei]) // Unique within laboratory!
+  @@index([labId, imei])
+  @@index([deviceId])
+}
+
+model FaultCategory {
+  id              String            @id @default(uuid())
+  labId           String?           // null means system default
+  lab             Lab?              @relation(fields: [labId], references: [id], onDelete: Cascade)
+  name            String            // FACE ID, DISPLAY, etc.
+  orderIndex      Int               @default(0)
+  createdAt       DateTime          @default(now())
+
+  faults          Fault[]
+
+  @@unique([labId, name])
+}
+
+model Fault {
+  id              String            @id @default(uuid())
+  categoryId      String
+  category        FaultCategory     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  labId           String?           // null means system default
+  lab             Lab?              @relation(fields: [labId], references: [id], onDelete: Cascade)
+  name            String
+  orderIndex      Int               @default(0)
+  createdAt       DateTime          @default(now())
+
+  deviceFaults    DeviceFault[]
+
+  @@unique([categoryId, name, labId])
+}
+
+model DeviceFault {
+  id              String            @id @default(uuid())
+  deviceId        String
+  device          Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  faultId         String?
+  fault           Fault?            @relation(fields: [faultId], references: [id])
+  customFaultName String?
+  isResolved      Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+
+  repairJobFaults RepairJobFault[]
+
+  @@index([deviceId])
+  @@index([faultId])
+}
+
+model RepairJob {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  deviceId        String
+  device          Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  jobNumber       String            // e.g. JOB-2026-0001
+  status          DeviceStatus      @default(RECEIVED)
+  isReturnClaim   Boolean           @default(false)
+  returnClaimId   String?           @unique
+  returnClaim     ReturnClaim?      @relation("ClaimJob", fields: [returnClaimId], references: [id])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  jobFaults       RepairJobFault[]
+  assignments     JobAssignment[]
+  attempts        RepairAttempt[]
+  notes           RepairNote[]
+  parts           RepairPart[]
+  qcInspections   QCInspection[]
+  originClaims    ReturnClaim[]     @relation("OriginRepairJob")
+
+  @@unique([labId, jobNumber])
+  @@index([labId])
+  @@index([deviceId])
+  @@index([status])
+}
+
+model RepairJobFault {
+  id              String            @id @default(uuid())
+  repairJobId     String
+  repairJob       RepairJob         @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  deviceFaultId   String
+  deviceFault     DeviceFault       @relation(fields: [deviceFaultId], references: [id], onDelete: Cascade)
+
+  @@index([repairJobId])
+}
+
+model JobAssignment {
+  id              String            @id @default(uuid())
+  repairJobId     String
+  repairJob       RepairJob         @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  technicianId    String
+  technician      User              @relation("AssignedTechnician", fields: [technicianId], references: [id])
+  assignedById    String
+  assignedBy      User              @relation("Assigner", fields: [assignedById], references: [id])
+  status          String            @default("ASSIGNED") // ASSIGNED, ACCEPTED, REASSIGNED, COMPLETED
+  assignedAt      DateTime          @default(now())
+  acceptedAt      DateTime?
+  completedAt     DateTime?
+
+  @@index([repairJobId])
+  @@index([technicianId])
+}
+
+model RepairAttempt {
+  id              String            @id @default(uuid())
+  repairJobId     String
+  repairJob       RepairJob         @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  attemptNumber   Int               @default(1)
+  technicianId    String
+  diagnosis       String?
+  rootCause       String?
+  workPerformed   String?
+  componentsReplaced String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  result          String?           // REPAIRED, NOT_POSSIBLE
+  notPossibleReason String?
+  partsRequiredDesc String?
+  isLocked        Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([repairJobId])
+}
+
+model RepairNote {
+  id              String            @id @default(uuid())
+  repairJobId     String
+  repairJob       RepairJob         @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User              @relation(fields: [userId], references: [id])
+  note            String
+  createdAt       DateTime          @default(now())
+
+  @@index([repairJobId])
+}
+
+model RepairPart {
+  id              String            @id @default(uuid())
+  repairJobId     String
+  repairJob       RepairJob         @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  partName        String
+  partNumber      String?
+  quantity        Int               @default(1)
+  cost            Float?
+  createdAt       DateTime          @default(now())
+
+  @@index([repairJobId])
+}
+
+model QCInspection {
+  id              String            @id @default(uuid())
+  repairJobId     String
+  repairJob       RepairJob         @relation(fields: [repairJobId], references: [id], onDelete: Cascade)
+  qcTechnicianId  String
+  qcTechnician    User              @relation(fields: [qcTechnicianId], references: [id])
+  decision        QCDecision
+  failureReason   String?
+  notes           String?
+  testedAt        DateTime          @default(now())
+
+  items           QCInspectionItem[]
+
+  @@index([repairJobId])
+  @@index([qcTechnicianId])
+}
+
+model QCInspectionItem {
+  id              String            @id @default(uuid())
+  inspectionId    String
+  inspection      QCInspection      @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  faultId         String?
+  faultName       String
+  passed          Boolean
+  notes           String?
+
+  @@index([inspectionId])
+}
+
+model ReturnClaim {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  deviceId        String
+  device          Device            @relation("DeviceReturnClaims", fields: [deviceId], references: [id], onDelete: Cascade)
+  previousRepairJobId String
+  previousRepairJob   RepairJob      @relation("OriginRepairJob", fields: [previousRepairJobId], references: [id])
+  claimType       ReturnClaimType
+  reviewStatus    ClaimReviewStatus @default(PENDING)
+  reviewNotes     String?
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime          @default(now())
+
+  newRepairJob    RepairJob?        @relation("ClaimJob")
+
+  @@index([labId])
+  @@index([deviceId])
+  @@index([claimType])
+}
+
+model DeviceMovement {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  deviceId        String
+  device          Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  fromDepartment  Department
+  toDepartment    Department
+  fromUserId      String?
+  fromUser        User?             @relation("MovementFromUser", fields: [fromUserId], references: [id])
+  toUserId        String?
+  toUser          User?             @relation("MovementToUser", fields: [toUserId], references: [id])
+  reason          String
+  notes           String?
+  movedAt         DateTime          @default(now())
+
+  @@index([labId])
+  @@index([deviceId])
+  @@index([movedAt])
+}
+
+model DevicePhoto {
+  id              String            @id @default(uuid())
+  deviceId        String
+  device          Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  url             String
+  caption         String?
+  stage           String            @default("INTAKE") // INTAKE, REPAIR, QC
+  createdAt       DateTime          @default(now())
+
+  @@index([deviceId])
+}
+
+model Notification {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String
+  body            String
+  data            Json?
+  isRead          Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+
+  @@index([userId, isRead])
+  @@index([labId])
+}
+
+model ActivityLog {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  userId          String?
+  user            User?             @relation(fields: [userId], references: [id])
+  action          String
+  entityType      String
+  entityId        String
+  metadata        Json?
+  createdAt       DateTime          @default(now())
+
+  @@index([labId])
+  @@index([entityType, entityId])
+}
+
+model AuditLog {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  userId          String?
+  user            User?             @relation(fields: [userId], references: [id])
+  action          String
+  beforeState     Json?
+  afterState      Json?
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime          @default(now())
+
+  @@index([labId])
+}
