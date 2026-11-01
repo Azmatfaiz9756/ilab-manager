@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "build": "npm run --workspaces --if-present build",
+    "start": "cd apps/backend && npm run start",
     "test": "npm run --workspaces --if-present test"
   }
 }
