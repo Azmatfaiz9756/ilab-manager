@@ -99,6 +99,42 @@ router.get('/my-repairs', authenticateToken, requireLabTenant, async (req: Authe
 });
 
 /**
+ * List all devices needing spare parts (For QC Sourcing & Lab Manager procurement)
+ */
+router.get('/parts-required-list', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+
+  const jobs = await prisma.repairJob.findMany({
+    where: {
+      labId,
+      status: DeviceStatus.PARTS_REQUIRED,
+    },
+    include: {
+      device: {
+        include: {
+          model: true,
+          imeis: true,
+          faults: { include: { fault: true } },
+        },
+      },
+      assignments: {
+        include: { technician: { select: { id: true, name: true, phone: true } } },
+        take: 1,
+        orderBy: { assignedAt: 'desc' },
+      },
+      attempts: {
+        take: 1,
+        orderBy: { attemptNumber: 'desc' },
+      },
+      parts: true,
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+
+  res.json({ success: true, data: jobs });
+});
+
+/**
  * -------------------------------------------------------------
  * RATE CARD & FAULT PRICING MANAGEMENT (Lab Manager)
  * -------------------------------------------------------------
@@ -510,6 +546,95 @@ router.patch('/:id/cost', authenticateToken, requireLabTenant, async (req: Authe
   });
 
   res.json({ success: true, data: updated });
+});
+
+/**
+ * Fulfill / Provide Part for Device (QC Technician or Lab Manager)
+ */
+router.post('/:id/fulfill-part', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const userId = req.user!.id;
+  const { partName, partCost = 0, notes } = req.body;
+
+  const job = await prisma.repairJob.findFirst({
+    where: { id: req.params.id, labId },
+    include: {
+      device: true,
+      assignments: { take: 1, orderBy: { assignedAt: 'desc' } },
+    },
+  });
+
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Repair job not found' });
+    return;
+  }
+
+  const techId = job.assignments?.[0]?.technicianId;
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Record Part
+    if (partName && partName.trim()) {
+      await tx.repairPart.create({
+        data: {
+          repairJobId: job.id,
+          partName: partName.trim(),
+          cost: Number(partCost) || 0,
+          quantity: 1,
+        },
+      });
+    }
+
+    const newPartsCost = (job.partsCost || 0) + (Number(partCost) || 0);
+    const newTotalCost = newPartsCost + (job.repairCost || 0);
+
+    // 2. Transition back to REPAIR_IN_PROGRESS
+    await tx.repairJob.update({
+      where: { id: job.id },
+      data: {
+        status: DeviceStatus.REPAIR_IN_PROGRESS,
+        partsCost: newPartsCost,
+        totalCost: newTotalCost,
+      },
+    });
+
+    await tx.device.update({
+      where: { id: job.deviceId },
+      data: {
+        currentStatus: DeviceStatus.REPAIR_IN_PROGRESS,
+        currentDepartment: Department.BOARD_REPAIR,
+        currentHolderId: techId || job.device.currentHolderId,
+      },
+    });
+
+    // 3. Record Movement
+    await tx.deviceMovement.create({
+      data: {
+        labId,
+        deviceId: job.deviceId,
+        fromDepartment: Department.QC,
+        toDepartment: Department.BOARD_REPAIR,
+        fromUserId: userId,
+        toUserId: techId || null,
+        reason: partName ? `Part Provided: ${partName}` : 'Part Provided to Technician',
+        notes: notes || undefined,
+      },
+    });
+
+    // 4. Notify Technician
+    if (techId) {
+      await tx.notification.create({
+        data: {
+          labId,
+          userId: techId,
+          title: `Part Provided for Job #${job.jobNumber}`,
+          body: `Requested part (${partName || 'spare part'}) has been provided. Repair can resume.`,
+          data: { repairJobId: job.id, deviceId: job.deviceId },
+        },
+      });
+    }
+  });
+
+  res.json({ success: true, message: 'Part provided and phone returned to technician active workbench' });
 });
 
 /**

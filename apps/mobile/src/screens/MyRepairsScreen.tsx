@@ -16,8 +16,11 @@ import { colors, spacing, borderRadius } from '../theme/colors';
 import { apiRequest } from '../services/api';
 import { StatusBadge } from '../components/StatusBadge';
 import { maskIMEI, DeviceStatus } from '../shared';
+import { useSettingsStore } from '../store/settingsStore';
+import { printSingleDeviceLabel } from '../services/labelPrinter';
 
 export const MyRepairsScreen: React.FC = () => {
+  const { formatMoney, printerWidth, labName, labPhone, currency } = useSettingsStore();
   const [activeJob, setActiveJob] = useState<any | null>(null);
   const [modalAction, setModalAction] = useState<string | null>(null);
   const [diagnosis, setDiagnosis] = useState('');
@@ -37,6 +40,24 @@ export const MyRepairsScreen: React.FC = () => {
 
   // Filter mode for Hardware Technician Workbench (defaults to INCOMING so handovers are immediately visible)
   const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'EARNINGS' | 'ALL'>('INCOMING');
+
+  const handlePrintLabel = async (job: any) => {
+    const dev = job.device || {};
+    const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
+    const faultNames = (dev.faults || []).map((f: any) => f.fault?.name || f.customFaultName || 'Fault');
+
+    await printSingleDeviceLabel(
+      {
+        jobNumber: job.jobNumber,
+        imei: primaryImei,
+        modelName: dev.model?.name || 'iPhone',
+        faults: faultNames,
+        customerName: dev.receivedFrom || job.customerName || undefined,
+        priority: dev.priority || 'NORMAL',
+      },
+      { labName, labPhone, paperWidth: printerWidth }
+    );
+  };
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['my_repairs_list'],
@@ -207,7 +228,7 @@ export const MyRepairsScreen: React.FC = () => {
         method: 'PATCH',
         body: JSON.stringify({ repairCost: cost }),
       });
-      Alert.alert('Cost Updated', `Repair cost set to ₹${cost}. Manager and ledger updated.`);
+      Alert.alert('Cost Updated', `Repair cost set to ${formatMoney(cost)}. Manager and ledger updated.`);
       setCostModalJob(null);
       setDirectCostInput('');
       refetch();
@@ -298,7 +319,7 @@ export const MyRepairsScreen: React.FC = () => {
           onPress={() => setFilterMode('EARNINGS')}
         >
           <Text style={[styles.segmentText, filterMode === 'EARNINGS' && styles.segmentTextActive]}>
-            💰 Ledger {payoutSummary ? `(₹${payoutSummary.balanceDue})` : ''}
+            💰 Ledger {payoutSummary ? `(${formatMoney(payoutSummary.balanceDue)})` : ''}
           </Text>
         </TouchableOpacity>
 
@@ -357,7 +378,7 @@ export const MyRepairsScreen: React.FC = () => {
               <View style={[styles.metricCard, { borderLeftColor: '#38bdf8' }]}>
                 <Text style={styles.metricLabel}>Total Work Done</Text>
                 <Text style={[styles.metricVal, { color: '#38bdf8' }]}>
-                  ₹{payoutSummary?.totalWorkDone || 0}
+                  {formatMoney(payoutSummary?.totalWorkDone || 0)}
                 </Text>
                 <Text style={styles.metricSub}>{payoutSummary?.completedJobsCount || 0} repairs completed</Text>
               </View>
@@ -365,7 +386,7 @@ export const MyRepairsScreen: React.FC = () => {
               <View style={[styles.metricCard, { borderLeftColor: '#22c55e' }]}>
                 <Text style={styles.metricLabel}>Total Paid Out</Text>
                 <Text style={[styles.metricVal, { color: '#22c55e' }]}>
-                  ₹{payoutSummary?.totalPaid || 0}
+                  {formatMoney(payoutSummary?.totalPaid || 0)}
                 </Text>
                 <Text style={styles.metricSub}>Confirmed accepted</Text>
               </View>
@@ -373,7 +394,7 @@ export const MyRepairsScreen: React.FC = () => {
               <View style={[styles.metricCard, { borderLeftColor: '#f59e0b' }]}>
                 <Text style={styles.metricLabel}>Balance Due</Text>
                 <Text style={[styles.metricVal, { color: '#f59e0b' }]}>
-                  ₹{payoutSummary?.balanceDue || 0}
+                  {formatMoney(payoutSummary?.balanceDue || 0)}
                 </Text>
                 <Text style={styles.metricSub}>Pending from Lab</Text>
               </View>
@@ -397,7 +418,7 @@ export const MyRepairsScreen: React.FC = () => {
                 .map((payout: any) => (
                   <View key={payout.id} style={styles.pendingPayoutCard}>
                     <View style={{ flex: 1, marginRight: 8 }}>
-                      <Text style={styles.pendingPayoutAmount}>₹{payout.amount}</Text>
+                      <Text style={styles.pendingPayoutAmount}>{formatMoney(payout.amount)}</Text>
                       <Text style={styles.pendingPayoutMeta}>
                         Mode: <Text style={{ fontWeight: '700', color: colors.textPrimary }}>{payout.paymentMode}</Text> • By: {payout.paidBy?.name}
                       </Text>
@@ -452,7 +473,7 @@ export const MyRepairsScreen: React.FC = () => {
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={styles.recentJobEarning}>
-                      + ₹{rj.repairCost || 0}
+                      + {formatMoney(rj.repairCost || 0)}
                     </Text>
                     <Text style={styles.recentJobDate}>
                       {new Date(rj.updatedAt).toLocaleDateString()}
@@ -476,7 +497,7 @@ export const MyRepairsScreen: React.FC = () => {
                 .map((payout: any) => (
                   <View key={payout.id} style={styles.historyPayoutRow}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.historyPayoutAmount}>₹{payout.amount} ({payout.paymentMode})</Text>
+                      <Text style={styles.historyPayoutAmount}>{formatMoney(payout.amount)} ({payout.paymentMode})</Text>
                       <Text style={styles.historyPayoutMeta}>
                         Paid by {payout.paidBy?.name} • Received on {new Date(payout.acceptedAt || payout.paidAt).toLocaleDateString()}
                       </Text>
@@ -562,18 +583,26 @@ export const MyRepairsScreen: React.FC = () => {
                   <Text style={styles.cardCostLabel}>
                     Labor Earning:{' '}
                     <Text style={styles.cardCostValue}>
-                      {job.repairCost ? `₹${job.repairCost}` : 'Pending'}
+                      {job.repairCost ? formatMoney(job.repairCost) : 'Pending'}
                     </Text>
                   </Text>
-                  <TouchableOpacity
-                    style={styles.setCostBtn}
-                    onPress={() => {
-                      setCostModalJob(job);
-                      setDirectCostInput(job.repairCost ? String(job.repairCost) : '');
-                    }}
-                  >
-                    <Text style={styles.setCostBtnText}>✏️ Set Cost</Text>
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                    <TouchableOpacity
+                      style={styles.cardPrintBtn}
+                      onPress={() => handlePrintLabel(job)}
+                    >
+                      <Text style={styles.cardPrintBtnText}>🖨️ Label</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.setCostBtn}
+                      onPress={() => {
+                        setCostModalJob(job);
+                        setDirectCostInput(job.repairCost ? String(job.repairCost) : '');
+                      }}
+                    >
+                      <Text style={styles.setCostBtnText}>✏️ Set Cost</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 {/* Repair Work Performed Notes Section */}
@@ -806,7 +835,7 @@ export const MyRepairsScreen: React.FC = () => {
                         onChangeText={setNotes}
                       />
 
-                      <Text style={styles.label}>Repair Cost / Labor Earning (₹)</Text>
+                      <Text style={styles.label}>Repair Cost / Labor Earning ({currency})</Text>
                       <TextInput
                         style={styles.input}
                         placeholder="e.g. 750 (Leave blank if not applicable)"
@@ -968,7 +997,7 @@ export const MyRepairsScreen: React.FC = () => {
             <Text style={styles.compactModalSub}>
               {costModalJob?.device?.model?.name}
             </Text>
-            <Text style={styles.label}>Technician Labor Earning (₹) *</Text>
+            <Text style={styles.label}>Technician Labor Earning ({currency}) *</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g. 750"
@@ -1558,6 +1587,19 @@ const styles = StyleSheet.create({
     color: '#38bdf8',
     fontWeight: '800',
     fontSize: 13,
+  },
+  cardPrintBtn: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  cardPrintBtnText: {
+    color: colors.primaryLight,
+    fontSize: 11,
+    fontWeight: '700',
   },
   setCostBtn: {
     backgroundColor: 'rgba(56, 189, 248, 0.18)',

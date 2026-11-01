@@ -19,6 +19,8 @@ import { colors, spacing, borderRadius } from '../theme/colors';
 import { apiRequest } from '../services/api';
 import { validateIMEILuhn, DevicePriority, DeviceStatus, maskIMEI } from '../shared';
 import { StatusBadge } from '../components/StatusBadge';
+import { useSettingsStore } from '../store/settingsStore';
+import { printLotLabels, printSingleDeviceLabel } from '../services/labelPrinter';
 
 interface BatchDeviceItem {
   id: string;
@@ -88,9 +90,10 @@ export function matchIPhoneModels(query: string, models: Array<{ id: string; nam
 
 export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const queryClient = useQueryClient();
+  const { formatMoney, printerWidth, labName, labPhone } = useSettingsStore();
 
-  // Top Operations Segment: 'intake' | 'sent_to_tech' | 'dispatch' | 'history'
-  const [activeSegment, setActiveSegment] = useState<'intake' | 'sent_to_tech' | 'dispatch' | 'history'>('intake');
+  // Top Operations Segment: 'intake' | 'sent_to_tech' | 'parts_required' | 'dispatch' | 'history'
+  const [activeSegment, setActiveSegment] = useState<'intake' | 'sent_to_tech' | 'parts_required' | 'dispatch' | 'history'>('intake');
 
   // Sent to Technician search
   const [sentSearchQuery, setSentSearchQuery] = useState('');
@@ -100,6 +103,86 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     refetchInterval: 4000,
   });
   const sentJobs = sentData?.data || [];
+
+  // Parts Required (Sourcing Queue)
+  const [partsSearchQuery, setPartsSearchQuery] = useState('');
+  const { data: partsRequiredData, isLoading: partsRequiredLoading, refetch: refetchPartsRequired } = useQuery({
+    queryKey: ['parts_required_jobs'],
+    queryFn: () => apiRequest('/repairs/parts-required-list'),
+    refetchInterval: 4000,
+  });
+  const partsRequiredJobs = partsRequiredData?.data || [];
+
+  // Fulfill Part Modal State
+  const [fulfillingJob, setFulfillingJob] = useState<any | null>(null);
+  const [fulfillPartName, setFulfillPartName] = useState('');
+  const [fulfillPartCost, setFulfillPartCost] = useState('');
+  const [fulfillNotes, setFulfillNotes] = useState('');
+  const [fulfillSubmitting, setFulfillSubmitting] = useState(false);
+
+  const handleFulfillPartSubmit = async () => {
+    if (!fulfillingJob) return;
+    if (!fulfillPartName.trim()) {
+      Alert.alert('Part Required', 'Please enter the name of the spare part being provided.');
+      return;
+    }
+    setFulfillSubmitting(true);
+    try {
+      await apiRequest(`/repairs/${fulfillingJob.id}/fulfill-part`, {
+        method: 'POST',
+        body: JSON.stringify({
+          partName: fulfillPartName.trim(),
+          partCost: Number(fulfillPartCost) || 0,
+          notes: fulfillNotes.trim(),
+        }),
+      });
+      Alert.alert('Part Provided', 'Part handed over successfully. Device returned to Technician workbench.');
+      setFulfillingJob(null);
+      setFulfillPartName('');
+      setFulfillPartCost('');
+      setFulfillNotes('');
+      refetchPartsRequired();
+      refetchSent();
+      queryClient.invalidateQueries({ queryKey: ['repairs'] });
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to fulfill part');
+    } finally {
+      setFulfillSubmitting(false);
+    }
+  };
+
+  const handlePrintBatchLot = async () => {
+    if (batchItems.length === 0) {
+      Alert.alert('Empty Batch', 'No devices in the current batch to print.');
+      return;
+    }
+    const lot = batchItems.map((item, idx) => ({
+      jobNumber: `LOT-${String(idx + 1).padStart(2, '0')}`,
+      imei: item.imei1,
+      modelName: item.modelName || 'iPhone',
+      faults: item.customFaults || [],
+      priority: item.priority || 'NORMAL',
+    }));
+    await printLotLabels(lot, { labName, labPhone, paperWidth: printerWidth });
+  };
+
+  const handlePrintDeviceLabel = async (job: any) => {
+    const dev = job.device || {};
+    const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
+    const faultNames = (dev.faults || []).map((f: any) => f.fault?.name || f.customFaultName || 'Fault');
+
+    await printSingleDeviceLabel(
+      {
+        jobNumber: job.jobNumber,
+        imei: primaryImei,
+        modelName: dev.model?.name || 'iPhone',
+        faults: faultNames,
+        customerName: dev.receivedFrom || job.customerName || undefined,
+        priority: dev.priority || 'NORMAL',
+      },
+      { labName, labPhone, paperWidth: printerWidth }
+    );
+  };
 
   // Intake Mode: 'batch' | 'single'
   const [intakeMode, setIntakeMode] = useState<'batch' | 'single'>('batch');
@@ -550,14 +633,14 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
   return (
     <View style={styles.container}>
-      {/* 1. TOP SEGMENT TABS (Intake | Sent to Tech | Return/Wapsi | History) */}
+      {/* 1. TOP SEGMENT TABS (Intake | Sent to Tech | Parts Needed | Return/Wapsi | History) */}
       <View style={styles.topSegmentBar}>
         <TouchableOpacity
           style={[styles.segmentBtn, activeSegment === 'intake' && styles.segmentBtnActive]}
           onPress={() => setActiveSegment('intake')}
         >
           <Text style={[styles.segmentText, activeSegment === 'intake' && styles.segmentTextActive]}>
-            📥 Intake Hub
+            📥 Intake
           </Text>
         </TouchableOpacity>
 
@@ -566,7 +649,16 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
           onPress={() => setActiveSegment('sent_to_tech')}
         >
           <Text style={[styles.segmentText, activeSegment === 'sent_to_tech' && styles.segmentTextActive]}>
-            🚀 Sent to Tech ({sentJobs.length})
+            🚀 Sent ({sentJobs.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, activeSegment === 'parts_required' && styles.segmentBtnActive]}
+          onPress={() => setActiveSegment('parts_required')}
+        >
+          <Text style={[styles.segmentText, activeSegment === 'parts_required' && styles.segmentTextActive]}>
+            📦 Parts ({partsRequiredJobs.length})
           </Text>
         </TouchableOpacity>
 
@@ -575,7 +667,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
           onPress={() => setActiveSegment('dispatch')}
         >
           <Text style={[styles.segmentText, activeSegment === 'dispatch' && styles.segmentTextActive]}>
-            📤 Return / Wapsi
+            📤 Return
           </Text>
         </TouchableOpacity>
 
@@ -714,29 +806,34 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
                 return (
                   <View key={cat.key} style={styles.mainFaultItem}>
-                    <TouchableOpacity
-                      style={[styles.mainFaultBtn, isCustomSelected && styles.mainFaultBtnSelected]}
-                      onPress={() => {
-                        // Toggle main fault tag
-                        if (isCustomSelected) {
-                          setDefaultCustomFaults((prev) => prev.filter((f) => f !== cat.key));
-                        } else {
-                          setDefaultCustomFaults((prev) => [...prev, cat.key]);
-                        }
-                      }}
-                    >
-                      <Text style={[styles.mainFaultText, isCustomSelected && styles.mainFaultTextSelected]}>
-                        {cat.label}
-                      </Text>
+                    <View style={styles.faultButtonRow}>
+                      <TouchableOpacity
+                        style={[styles.mainFaultBtn, isCustomSelected && styles.mainFaultBtnSelected]}
+                        onPress={() => {
+                          if (isCustomSelected) {
+                            setDefaultCustomFaults((prev) => prev.filter((f) => f !== cat.key));
+                          } else {
+                            setDefaultCustomFaults((prev) => [...prev, cat.key]);
+                          }
+                        }}
+                      >
+                        <Text style={[styles.mainFaultText, isCustomSelected && styles.mainFaultTextSelected]}>
+                          {isCustomSelected ? '✓ ' : ''}{cat.label}
+                        </Text>
+                      </TouchableOpacity>
+
                       {catObj?.faults?.length > 0 && (
                         <TouchableOpacity
-                          style={styles.expandArrowBtn}
+                          style={[styles.bigExpandBtn, isExpanded && styles.bigExpandBtnActive]}
                           onPress={() => setExpandedCategoryId(isExpanded ? null : cat.key)}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         >
-                          <Text style={styles.expandArrowText}>{isExpanded ? '▲' : '▾'}</Text>
+                          <Text style={[styles.bigExpandText, isExpanded && styles.bigExpandTextActive]}>
+                            {isExpanded ? '▲ Close' : `▼ Sub (${catObj.faults.length})`}
+                          </Text>
                         </TouchableOpacity>
                       )}
-                    </TouchableOpacity>
+                    </View>
 
                     {/* Sub-fault expandable root */}
                     {isExpanded && catObj?.faults && (
@@ -975,17 +1072,26 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                 </Text>
               </View>
               {batchItems.length > 0 && (
-                <TouchableOpacity
-                  style={styles.clearBatchBtn}
-                  onPress={() => {
-                    Alert.alert('Clear Batch', 'Remove all scanned phones from batch?', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Clear All', style: 'destructive', onPress: () => setBatchItems([]) },
-                    ]);
-                  }}
-                >
-                  <Text style={styles.clearBatchBtnText}>Clear All</Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                  <TouchableOpacity
+                    style={styles.printBatchLotBtn}
+                    onPress={handlePrintBatchLot}
+                  >
+                    <Text style={styles.printBatchLotBtnText}>🖨️ Lot Labels</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.clearBatchBtn}
+                    onPress={() => {
+                      Alert.alert('Clear Batch', 'Remove all scanned phones from batch?', [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Clear All', style: 'destructive', onPress: () => setBatchItems([]) },
+                      ]);
+                    }}
+                  >
+                    <Text style={styles.clearBatchBtnText}>Clear All</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
 
@@ -1196,9 +1302,144 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
                     <View style={styles.cardFooter}>
                       <Text style={styles.jobNumber}>Job #{job.jobNumber}</Text>
-                      <Text style={[styles.priorityText, dev.priority === 'URGENT' && { color: colors.danger }]}>
-                        {dev.priority || 'NORMAL'}
-                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <TouchableOpacity
+                          style={styles.cardPrintBtn}
+                          onPress={() => handlePrintDeviceLabel(job)}
+                        >
+                          <Text style={styles.cardPrintBtnText}>🖨️ Label</Text>
+                        </TouchableOpacity>
+                        <Text style={[styles.priorityText, dev.priority === 'URGENT' && { color: colors.danger }]}>
+                          {dev.priority || 'NORMAL'}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+          )}
+        </ScrollView>
+      )}
+
+      {/* ======================================================== */}
+      {/* TAB: PARTS REQUIRED / SOURCING QUEUE                     */}
+      {/* ======================================================== */}
+      {activeSegment === 'parts_required' && (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={partsRequiredLoading}
+              onRefresh={() => {
+                refetchPartsRequired();
+              }}
+              tintColor={colors.primaryLight}
+            />
+          }
+        >
+          {/* Header & Search */}
+          <View style={styles.filterCard}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardHeaderTitle}>📦 Spare Parts Sourcing Queue</Text>
+                <Text style={styles.presetHint}>
+                  Phones on hold waiting for components requested by Hardware Technicians
+                </Text>
+              </View>
+              <View style={styles.badgeLive}>
+                <Text style={styles.badgeLiveText}>{partsRequiredJobs.length} Pending</Text>
+              </View>
+            </View>
+
+            <TextInput
+              style={[styles.returnSearchInput, { marginTop: spacing.sm }]}
+              placeholder="Search by Model, IMEI, Tech, or Part name..."
+              placeholderTextColor={colors.textMuted}
+              value={partsSearchQuery}
+              onChangeText={setPartsSearchQuery}
+              autoCapitalize="none"
+            />
+          </View>
+
+          {partsRequiredJobs.length === 0 ? (
+            <View style={[styles.emptyContainer, { paddingVertical: spacing.xl, alignItems: 'center' }]}>
+              <Text style={styles.emptyTitle}>🎉 No Parts Pending</Text>
+              <Text style={styles.emptyText}>All technician part requests are fulfilled.</Text>
+            </View>
+          ) : (
+            partsRequiredJobs
+              .filter((job: any) => {
+                if (!partsSearchQuery.trim()) return true;
+                const q = partsSearchQuery.toLowerCase();
+                const dev = job.device || {};
+                const model = (dev.model?.name || '').toLowerCase();
+                const jn = (job.jobNumber || '').toLowerCase();
+                const tech = (job.assignments?.[0]?.technician?.name || '').toLowerCase();
+                const imeis = (dev.imeis || []).map((i: any) => i.imei).join(' ');
+                const lastAttemptNote = (job.attempts?.[0]?.workPerformed || '').toLowerCase();
+                return model.includes(q) || jn.includes(q) || tech.includes(q) || imeis.includes(q) || lastAttemptNote.includes(q);
+              })
+              .map((job: any) => {
+                const dev = job.device || {};
+                const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
+                const techName = job.assignments?.[0]?.technician?.name || 'Hardware Technician';
+                const lastAttempt = job.attempts?.[0];
+                const partsNeededDesc = lastAttempt?.workPerformed || lastAttempt?.diagnosis || 'Part required for board repair';
+
+                return (
+                  <View key={job.id} style={styles.partsQueueCard}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <View style={{ flex: 1, marginRight: 8 }}>
+                        <Text style={styles.sentModelName}>{dev.model?.name || 'iPhone'}</Text>
+                        <Text style={styles.sentImei}>IMEI: {primaryImei}</Text>
+                      </View>
+                      <StatusBadge status={job.status} />
+                    </View>
+
+                    <View style={styles.techHolderRow}>
+                      <Text style={styles.techHolderLabel}>👤 Tech Requester:</Text>
+                      <Text style={styles.techHolderName}>{techName}</Text>
+                    </View>
+
+                    {/* Part Note Box */}
+                    <View style={styles.partsNoteBox}>
+                      <Text style={styles.partsNoteLabel}>Requested Component / Note:</Text>
+                      <Text style={styles.partsNoteText}>{partsNeededDesc}</Text>
+                    </View>
+
+                    {/* Faults */}
+                    {dev.faults && dev.faults.length > 0 && (
+                      <View style={styles.rowFaultsWrap}>
+                        {dev.faults.map((f: any) => (
+                          <View key={f.id} style={styles.rowFaultChip}>
+                            <Text style={styles.rowFaultText}>
+                              {f.fault?.name || f.customFaultName || 'Fault'}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                    <View style={styles.partsActionRow}>
+                      <TouchableOpacity
+                        style={styles.cardPrintBtn}
+                        onPress={() => handlePrintDeviceLabel(job)}
+                      >
+                        <Text style={styles.cardPrintBtnText}>🖨️ Label</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.fulfillPartBtn}
+                        onPress={() => {
+                          setFulfillingJob(job);
+                          setFulfillPartName(lastAttempt?.workPerformed || '');
+                          setFulfillPartCost('');
+                          setFulfillNotes('');
+                        }}
+                      >
+                        <Text style={styles.fulfillPartBtnText}>🎁 Provide / Hand Over Part</Text>
+                      </TouchableOpacity>
                     </View>
                   </View>
                 );
@@ -1330,13 +1571,13 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                     {(job.repairCost || job.partsCost || job.totalCost) ? (
                       <View style={{ flexDirection: 'row', gap: 12, marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)' }}>
                         <Text style={{ fontSize: 11, color: '#38bdf8', fontWeight: '700' }}>
-                          Tech Labor: ₹{job.repairCost || 0}
+                          Tech Labor: {formatMoney(job.repairCost || 0)}
                         </Text>
                         <Text style={{ fontSize: 11, color: '#fb923c', fontWeight: '700' }}>
-                          Parts: ₹{job.partsCost || 0}
+                          Parts: {formatMoney(job.partsCost || 0)}
                         </Text>
                         <Text style={{ fontSize: 11, color: '#4ade80', fontWeight: '800' }}>
-                          Total Cost: ₹{job.totalCost || ((job.repairCost || 0) + (job.partsCost || 0))}
+                          Total: {formatMoney(job.totalCost || ((job.repairCost || 0) + (job.partsCost || 0)))}
                         </Text>
                       </View>
                     ) : null}
@@ -1427,13 +1668,13 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                 {(job.repairCost || job.partsCost || job.totalCost) ? (
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 4, paddingVertical: 4 }}>
                     <Text style={{ fontSize: 11, color: '#38bdf8', fontWeight: '700' }}>
-                      Tech Labor: ₹{job.repairCost || 0}
+                      Tech Labor: {formatMoney(job.repairCost || 0)}
                     </Text>
                     <Text style={{ fontSize: 11, color: '#fb923c', fontWeight: '700' }}>
-                      Parts: ₹{job.partsCost || 0}
+                      Parts: {formatMoney(job.partsCost || 0)}
                     </Text>
                     <Text style={{ fontSize: 11, color: '#4ade80', fontWeight: '800' }}>
-                      Total Cost: ₹{job.totalCost || ((job.repairCost || 0) + (job.partsCost || 0))}
+                      Total: {formatMoney(job.totalCost || ((job.repairCost || 0) + (job.partsCost || 0)))}
                     </Text>
                   </View>
                 ) : null}
@@ -1762,6 +2003,70 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
           </View>
         </View>
       </Modal>
+
+      {/* MODAL: Fulfill / Hand Over Part to Technician */}
+      <Modal visible={!!fulfillingJob} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalCardTitle}>🎁 Hand Over Spare Part</Text>
+            <Text style={styles.modalCardSub}>
+              Job #{fulfillingJob?.jobNumber} • {fulfillingJob?.device?.model?.name || 'iPhone'}
+            </Text>
+
+            <Text style={[styles.label, { marginTop: spacing.sm }]}>Part Description / Name *</Text>
+            <TextInput
+              style={styles.metaInput}
+              placeholder="e.g. iPhone Audio IC, Battery, Display..."
+              placeholderTextColor={colors.textMuted}
+              value={fulfillPartName}
+              onChangeText={setFulfillPartName}
+            />
+
+            <Text style={[styles.label, { marginTop: spacing.sm }]}>
+              Part Sourcing Cost ({formatMoney(0).charAt(0)})
+            </Text>
+            <TextInput
+              style={styles.metaInput}
+              placeholder="e.g. 450"
+              placeholderTextColor={colors.textMuted}
+              value={fulfillPartCost}
+              onChangeText={setFulfillPartCost}
+              keyboardType="numeric"
+            />
+
+            <Text style={[styles.label, { marginTop: spacing.sm }]}>Handover Notes (Optional)</Text>
+            <TextInput
+              style={styles.metaInput}
+              placeholder="e.g. Original pulled part from donor board"
+              placeholderTextColor={colors.textMuted}
+              value={fulfillNotes}
+              onChangeText={setFulfillNotes}
+            />
+
+            <View style={{ marginTop: spacing.md, gap: 8 }}>
+              <TouchableOpacity
+                style={[styles.confirmReturnBtn, fulfillSubmitting && { opacity: 0.7 }]}
+                onPress={handleFulfillPartSubmit}
+                disabled={fulfillSubmitting}
+              >
+                {fulfillSubmitting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.confirmReturnBtnText}>✓ Confirm & Send to Tech Bench</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.cancelReturnBtn}
+                onPress={() => setFulfillingJob(null)}
+                disabled={fulfillSubmitting}
+              >
+                <Text style={styles.cancelReturnBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -1990,18 +2295,23 @@ const styles = StyleSheet.create({
     marginVertical: 4,
   },
   mainFaultItem: {
-    marginBottom: 4,
+    marginBottom: 6,
+  },
+  faultButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   mainFaultBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.surfaceElevated,
-    paddingLeft: 10,
-    paddingRight: 6,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
+    minHeight: 38,
   },
   mainFaultBtnSelected: {
     backgroundColor: colors.primary,
@@ -2016,13 +2326,106 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '800',
   },
-  expandArrowBtn: {
-    paddingHorizontal: 6,
-    marginLeft: 4,
+  bigExpandBtn: {
+    backgroundColor: colors.surface,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    minHeight: 38,
+    minWidth: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  expandArrowText: {
+  bigExpandBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primaryLight,
+  },
+  bigExpandText: {
+    fontSize: 11,
+    color: colors.primaryLight,
+    fontWeight: '700',
+  },
+  bigExpandTextActive: {
+    color: '#fff',
+    fontWeight: '800',
+  },
+  printBatchLotBtn: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  printBatchLotBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  cardPrintBtn: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  cardPrintBtnText: {
+    color: colors.primaryLight,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  partsQueueCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(234, 179, 8, 0.3)',
+  },
+  partsNoteBox: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: borderRadius.sm,
+    padding: spacing.xs + 2,
+    marginVertical: spacing.xs,
+    borderLeftWidth: 3,
+    borderLeftColor: '#eab308',
+  },
+  partsNoteLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#eab308',
+    textTransform: 'uppercase',
+  },
+  partsNoteText: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: colors.textPrimary,
+    marginTop: 2,
+  },
+  partsActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.surfaceBorder,
+    paddingTop: spacing.xs,
+    gap: 8,
+  },
+  fulfillPartBtn: {
+    flex: 1,
+    backgroundColor: '#22c55e',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+  },
+  fulfillPartBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
   },
 
   // Sub-faults Container

@@ -318,17 +318,21 @@ router.post('/intake', authenticateToken, requireLabTenant, async (req: Authenti
       return { deviceId, repairJob, returnClaim: returnClaimRecord };
     });
 
-    // Record initial movement: Intake -> Board Repair (or QC)
-    await recordDeviceMovement({
-      labId,
-      deviceId: result.deviceId,
-      fromDepartment: Department.INTAKE,
-      toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
-      fromUserId: currentUserId,
-      toUserId: input.assignedTechnicianId || null,
-      reason: input.assignedTechnicianId ? 'Assigned to Board Technician' : 'Received at QC Intake',
-      notes: input.initialNotes,
-    });
+    // Record initial movement: Intake -> Board Repair (or QC) after transaction commits
+    try {
+      await recordDeviceMovement({
+        labId,
+        deviceId: result.deviceId,
+        fromDepartment: Department.INTAKE,
+        toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
+        fromUserId: currentUserId,
+        toUserId: input.assignedTechnicianId || null,
+        reason: input.assignedTechnicianId ? 'Assigned to Board Technician' : 'Received at QC Intake',
+        notes: input.initialNotes,
+      });
+    } catch (moveErr) {
+      console.warn(`[Intake] Warning: Failed to record movement log for device ${result.deviceId}:`, moveErr);
+    }
 
     res.status(201).json({
       success: true,
@@ -531,21 +535,23 @@ router.post('/bulk-intake', authenticateToken, requireLabTenant, async (req: Aut
             });
           }
 
-          await recordDeviceMovement(
-            {
-              labId,
-              deviceId,
-              fromDepartment: Department.INTAKE,
-              toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
-              fromUserId: currentUserId,
-              toUserId: input.assignedTechnicianId || null,
-              reason: input.batchName ? `Batch Intake: ${input.batchName}` : 'Bulk Intake',
-            },
-            tx
-          );
-
           return { deviceId, jobNumber, modelName: modelMap.get(item.modelId) || 'iPhone' };
         });
+
+        // Record initial movement: Intake -> Board Repair (or QC) AFTER transaction commits
+        try {
+          await recordDeviceMovement({
+            labId,
+            deviceId: itemResult.deviceId,
+            fromDepartment: Department.INTAKE,
+            toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
+            fromUserId: currentUserId,
+            toUserId: input.assignedTechnicianId || null,
+            reason: input.batchName ? `Batch Intake: ${input.batchName}` : 'Bulk Intake',
+          });
+        } catch (moveErr) {
+          console.warn(`[Bulk Intake] Warning: Movement log skipped for device ${itemResult.deviceId}:`, moveErr);
+        }
 
         createdResults.push({
           imei: cleanImei1,

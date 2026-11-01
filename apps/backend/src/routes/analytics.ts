@@ -243,4 +243,134 @@ router.get('/reports', authenticateToken, requireLabTenant, async (req: Authenti
   });
 });
 
+/**
+ * Daily / Weekly / Monthly Profit & Loss (P&L) Analytics
+ */
+router.get('/pnl', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const { period = 'month' } = req.query;
+
+  const now = new Date();
+  let startDate = new Date();
+
+  if (period === 'today') {
+    startDate.setHours(0, 0, 0, 0);
+  } else if (period === 'week') {
+    startDate.setDate(now.getDate() - 7);
+  } else if (period === 'all') {
+    startDate = new Date(2020, 0, 1);
+  } else {
+    startDate.setDate(now.getDate() - 30);
+  }
+
+  const jobs = await prisma.repairJob.findMany({
+    where: {
+      labId,
+      updatedAt: { gte: startDate },
+      status: { in: [DeviceStatus.DISPATCHED, DeviceStatus.QC_PASSED, DeviceStatus.READY_FOR_DISPATCH, DeviceStatus.REPAIR_COMPLETED] },
+    },
+    include: {
+      parts: true,
+      device: { include: { model: true } },
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+
+  let grossRevenue = 0;
+  let techLaborCost = 0;
+  let partsExpense = 0;
+
+  for (const j of jobs) {
+    const lCost = j.repairCost || 0;
+    const pCost = j.partsCost || 0;
+    techLaborCost += lCost;
+    partsExpense += pCost;
+
+    const customerPrice = (lCost > 0 ? lCost * 1.8 : 800) + pCost;
+    grossRevenue += customerPrice;
+  }
+
+  const netProfit = grossRevenue - (techLaborCost + partsExpense);
+  const marginPercent = grossRevenue > 0 ? Math.round((netProfit / grossRevenue) * 100) : 0;
+
+  res.json({
+    success: true,
+    data: {
+      period,
+      grossRevenue: Math.round(grossRevenue),
+      techLaborCost: Math.round(techLaborCost),
+      partsExpense: Math.round(partsExpense),
+      netProfit: Math.round(netProfit),
+      marginPercent,
+      completedRepairsCount: jobs.length,
+      recentJobs: jobs.slice(0, 15),
+    },
+  });
+});
+
+/**
+ * Technician Performance Leaderboard & Rework / Return Claim Ranking
+ */
+router.get('/technician-rankings', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+
+  const memberships = await prisma.labMembership.findMany({
+    where: {
+      labId,
+      role: { in: [UserRole.BOARD_TECHNICIAN, UserRole.QC_TECHNICIAN] },
+    },
+    include: {
+      user: { select: { id: true, name: true, phone: true } },
+    },
+  });
+
+  const rankings = await Promise.all(
+    memberships.map(async (m) => {
+      const techId = m.userId;
+
+      const assignedJobs = await prisma.repairJob.findMany({
+        where: {
+          labId,
+          assignments: { some: { technicianId: techId } },
+        },
+        select: {
+          id: true,
+          status: true,
+          isReturnClaim: true,
+          repairCost: true,
+        },
+      });
+
+      const totalAssigned = assignedJobs.length;
+      const completedStatuses: string[] = [
+        DeviceStatus.QC_PASSED,
+        DeviceStatus.READY_FOR_DISPATCH,
+        DeviceStatus.DISPATCHED,
+        DeviceStatus.REPAIR_COMPLETED,
+      ];
+      const completedCount = assignedJobs.filter((j) => completedStatuses.includes(j.status)).length;
+
+      const returnClaimCount = assignedJobs.filter((j) => j.isReturnClaim).length;
+      const reworkRate = completedCount > 0 ? Math.round((returnClaimCount / completedCount) * 100) : 0;
+      const successRate = totalAssigned > 0 ? Math.round((completedCount / totalAssigned) * 100) : 0;
+      const totalEarned = assignedJobs.reduce((sum, j) => sum + (j.repairCost || 0), 0);
+
+      return {
+        technician: m.user,
+        role: m.role,
+        totalAssigned,
+        completedCount,
+        returnClaimCount,
+        reworkRate,
+        successRate,
+        totalEarned,
+      };
+    })
+  );
+
+  rankings.sort((a, b) => b.completedCount - a.completedCount || a.reworkRate - b.reworkRate);
+
+  res.json({ success: true, data: rankings });
+});
+
 export default router;

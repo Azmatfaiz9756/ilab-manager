@@ -15,8 +15,10 @@ import { useQuery } from '@tanstack/react-query';
 import { colors, spacing, borderRadius } from '../theme/colors';
 import { apiRequest } from '../services/api';
 import { UserRole } from '../shared';
+import { useSettingsStore } from '../store/settingsStore';
 
 export const TeamScreen: React.FC = () => {
+  const { formatMoney, currency } = useSettingsStore();
   const [activeTab, setActiveTab] = useState<'MEMBERS' | 'PAYOUTS' | 'RATE_CARDS'>('MEMBERS');
 
   // Add Member Modal State
@@ -122,7 +124,7 @@ export const TeamScreen: React.FC = () => {
         }),
       });
 
-      Alert.alert('Payout Sent', `₹${payoutAmount} payout sent to ${selectedTech.name}. Awaiting technician acceptance.`);
+      Alert.alert('Payout Sent', `${formatMoney(Number(payoutAmount) || 0)} payout sent to ${selectedTech.name}. Awaiting technician acceptance.`);
       setPayoutModalVisible(false);
       setSelectedTech(null);
       setPayoutAmount('');
@@ -304,25 +306,25 @@ export const TeamScreen: React.FC = () => {
                     <View style={styles.techStatCol}>
                       <Text style={styles.techStatLabel}>Work Done</Text>
                       <Text style={[styles.techStatVal, { color: '#38bdf8' }]}>
-                        ₹{techItem.totalWorkDone || 0}
+                        {formatMoney(techItem.totalWorkDone || 0)}
                       </Text>
                     </View>
                     <View style={styles.techStatCol}>
                       <Text style={styles.techStatLabel}>Paid Out</Text>
                       <Text style={[styles.techStatVal, { color: '#22c55e' }]}>
-                        ₹{techItem.totalPaid || 0}
+                        {formatMoney(techItem.totalPaid || 0)}
                       </Text>
                     </View>
                     <View style={styles.techStatCol}>
                       <Text style={styles.techStatLabel}>Pending Receipt</Text>
                       <Text style={[styles.techStatVal, { color: '#fb923c' }]}>
-                        ₹{techItem.pendingPayouts || 0}
+                        {formatMoney(techItem.pendingPayouts || 0)}
                       </Text>
                     </View>
                     <View style={styles.techStatCol}>
                       <Text style={styles.techStatLabel}>Balance Due</Text>
                       <Text style={[styles.techStatVal, { color: '#f59e0b' }]}>
-                        ₹{techItem.balanceDue || 0}
+                        {formatMoney(techItem.balanceDue || 0)}
                       </Text>
                     </View>
                   </View>
@@ -362,10 +364,10 @@ export const TeamScreen: React.FC = () => {
                   <Text style={styles.rateCardFault}>⚡ {rc.faultName || rc.fault?.name}</Text>
                   <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
                     <Text style={{ fontSize: 12, color: '#38bdf8', fontWeight: '700' }}>
-                      Customer Price: ₹{rc.repairPrice}
+                      Customer Price: {formatMoney(rc.repairPrice)}
                     </Text>
                     <Text style={{ fontSize: 12, color: '#4ade80', fontWeight: '700' }}>
-                      Tech Earning: ₹{rc.techEarning}
+                      Tech Earning: {formatMoney(rc.techEarning)}
                     </Text>
                   </View>
                 </View>
@@ -453,7 +455,7 @@ export const TeamScreen: React.FC = () => {
             <Text style={styles.modalTitle}>💸 Issue Technician Payout</Text>
             <Text style={styles.modalSubTitle}>Technician: {selectedTech?.name}</Text>
 
-            <Text style={styles.label}>Payout Amount (₹) *</Text>
+            <Text style={styles.label}>Payout Amount ({currency}) *</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g. 3500"
@@ -539,7 +541,7 @@ export const TeamScreen: React.FC = () => {
               onChangeText={setFaultNameInput}
             />
 
-            <Text style={styles.label}>3. Customer / Repair Price (₹) *</Text>
+            <Text style={styles.label}>3. Customer / Repair Price ({currency}) *</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g. 1500"
@@ -549,7 +551,7 @@ export const TeamScreen: React.FC = () => {
               onChangeText={setRepairPriceInput}
             />
 
-            <Text style={styles.label}>4. Technician Labor Earning (₹) *</Text>
+            <Text style={styles.label}>4. Technician Labor Earning ({currency}) *</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g. 600"
