@@ -38,6 +38,54 @@ interface BatchDeviceItem {
   previousDiagnosis?: string;
 }
 
+// ----------------------------------------------------
+// SMART IPHONE SHORTHAND & MODEL MATCHER
+// ----------------------------------------------------
+export function matchIPhoneModels(query: string, models: Array<{ id: string; name: string }>) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  // Remove leading 'iphone' or 'ip'
+  const cleanQ = q.replace(/^iphone\s*/i, '').replace(/^ip\s*/i, '').trim();
+
+  return models.filter((m) => {
+    const name = m.name.toLowerCase();
+    const cleanName = name.replace(/^iphone\s*/i, '').trim();
+
+    // 1. Direct substring match
+    if (name.includes(q) || cleanName.includes(cleanQ)) return true;
+
+    // 2. Token shorthand matching: "16pm", "16 pm", "16 pro m", "12p", "8", etc.
+    const match = cleanQ.match(/^(\d+|x|xr|xs|se)\s*(.*)$/i);
+    if (match) {
+      const baseNum = match[1].toLowerCase();
+      const rawSuffix = match[2].toLowerCase().replace(/\s+/g, '');
+
+      const nameMatch = cleanName.match(/^(\d+|x|xr|xs|se)\b\s*(.*)$/i);
+      if (nameMatch) {
+        const nameBase = nameMatch[1].toLowerCase();
+        const nameSuffix = nameMatch[2].toLowerCase().replace(/\s+/g, '');
+
+        if (nameBase === baseNum) {
+          if (!rawSuffix) return true; // e.g. "16" matches 16, 16 Plus, 16 Pro, 16 Pro Max
+          if (rawSuffix === 'p' && nameSuffix.startsWith('pro')) return true;
+          if (
+            (rawSuffix === 'pm' || rawSuffix === 'prom' || rawSuffix === 'promax' || rawSuffix === 'max') &&
+            nameSuffix.includes('promax')
+          ) {
+            return true;
+          }
+          if ((rawSuffix === '+' || rawSuffix === 'plus') && nameSuffix.includes('plus')) return true;
+          if ((rawSuffix === 'm' || rawSuffix === 'mini') && nameSuffix.includes('mini')) return true;
+          if (nameSuffix.includes(rawSuffix)) return true;
+        }
+      }
+    }
+
+    return false;
+  });
+}
+
 export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const queryClient = useQueryClient();
 
@@ -100,6 +148,21 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
   const [defaultPriority, setDefaultPriority] = useState<DevicePriority>(DevicePriority.NORMAL);
   const [assignedTechId, setAssignedTechId] = useState<string>('');
   const [batchName, setBatchName] = useState('');
+
+  // Smart iPhone Model Shorthand & Suggestions State
+  const [modelSearchQuery, setModelSearchQuery] = useState('');
+  const [modelSuggestionsOpen, setModelSuggestionsOpen] = useState(false);
+
+  // Selected Model Object
+  const selectedModelObj = useMemo(() => {
+    return models.find((m: any) => m.id === defaultModelId) || models[0];
+  }, [models, defaultModelId]);
+
+  // Intelligent Shorthand Matcher Results
+  const filteredModels = useMemo(() => {
+    if (!modelSearchQuery.trim()) return [];
+    return matchIPhoneModels(modelSearchQuery, models);
+  }, [modelSearchQuery, models]);
 
   // Auto-select technician if only 1 active board tech in lab
   React.useEffect(() => {
@@ -560,32 +623,84 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
               <Text style={styles.presetHint}>Set once — all scanned phones get this automatically</Text>
             </View>
 
-            {/* Default Model Selector */}
-            <Text style={styles.label}>1. Batch Model (e.g. iPhone 12 for all 20 phones)</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.modelHorizontalScroll}>
-              {models.map((m: any) => {
-                const isSelected = m.id === defaultModelId;
-                return (
-                  <TouchableOpacity
-                    key={m.id}
-                    style={[styles.modelChip, isSelected && styles.modelChipSelected]}
-                    onPress={() => {
-                      setDefaultModelId(m.id);
-                      // Also offer to update existing batch rows
-                      if (batchItems.length > 0) {
-                        setBatchItems((prev) =>
-                          prev.map((item) => ({ ...item, modelId: m.id, modelName: m.name }))
-                        );
-                      }
-                    }}
-                  >
-                    <Text style={[styles.modelChipText, isSelected && styles.modelChipTextSelected]}>
-                      {m.name}
-                    </Text>
+            {/* Default Model Selector with Smart Shorthand (e.g. 8, 12p, 16pm, 16 pro max) */}
+            <Text style={styles.label}>1. Batch Model (Type shorthand: e.g. 8, 12p, 16pm, 16)</Text>
+            
+            <View style={styles.modelSearchBoxContainer}>
+              <Text style={{ fontSize: 16, marginRight: 6 }}>🔍</Text>
+              <TextInput
+                style={styles.modelSearchInput}
+                placeholder="Type shorthand (8, 12p, 16pm, 16 pro max...)"
+                placeholderTextColor={colors.textMuted}
+                value={modelSearchQuery}
+                onChangeText={(text) => {
+                  setModelSearchQuery(text);
+                  setModelSuggestionsOpen(true);
+                }}
+                onFocus={() => setModelSuggestionsOpen(true)}
+              />
+              {modelSearchQuery.length > 0 && (
+                <TouchableOpacity
+                  style={styles.clearSearchBtn}
+                  onPress={() => {
+                    setModelSearchQuery('');
+                    setModelSuggestionsOpen(false);
+                  }}
+                >
+                  <Text style={styles.clearSearchBtnText}>✕</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Active Selected Model Banner */}
+            {selectedModelObj && (
+              <View style={styles.activeModelIndicator}>
+                <Text style={styles.activeModelIndicatorText}>
+                  ✓ Active Batch Model: <Text style={{ fontWeight: '700', color: colors.primaryLight }}>{selectedModelObj.name}</Text>
+                </Text>
+              </View>
+            )}
+
+            {/* Smart Suggestions Dropdown Grid */}
+            {modelSuggestionsOpen && (
+              <View style={styles.modelSuggestionsCard}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <Text style={styles.modelSuggestionsHeader}>
+                    {filteredModels.length > 0
+                      ? `Select Model (${filteredModels.length} matches):`
+                      : 'Popular iPhone Models:'}
+                  </Text>
+                  <TouchableOpacity onPress={() => setModelSuggestionsOpen(false)}>
+                    <Text style={{ color: colors.textMuted, fontSize: 11 }}>Close ✕</Text>
                   </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+                </View>
+                <View style={styles.modelSuggestionsGrid}>
+                  {(filteredModels.length > 0 ? filteredModels : models.slice(0, 8)).map((m: any) => {
+                    const isSelected = m.id === defaultModelId;
+                    return (
+                      <TouchableOpacity
+                        key={m.id}
+                        style={[styles.suggestedModelChip, isSelected && styles.suggestedModelChipActive]}
+                        onPress={() => {
+                          setDefaultModelId(m.id);
+                          setModelSearchQuery(m.name);
+                          setModelSuggestionsOpen(false);
+                          if (batchItems.length > 0) {
+                            setBatchItems((prev) =>
+                              prev.map((item) => ({ ...item, modelId: m.id, modelName: m.name }))
+                            );
+                          }
+                        }}
+                      >
+                        <Text style={[styles.suggestedModelText, isSelected && styles.suggestedModelTextActive]}>
+                          {m.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
 
             {/* Default Main Faults Selector */}
             <Text style={[styles.label, { marginTop: spacing.sm }]}>
@@ -1210,6 +1325,21 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                         Parts Used: {job.parts.map((p: any) => p.partName).join(', ')}
                       </Text>
                     )}
+
+                    {/* Cost Breakdown per Phone (IMEI & Model) */}
+                    {(job.repairCost || job.partsCost || job.totalCost) ? (
+                      <View style={{ flexDirection: 'row', gap: 12, marginTop: 4, paddingTop: 4, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)' }}>
+                        <Text style={{ fontSize: 11, color: '#38bdf8', fontWeight: '700' }}>
+                          Tech Labor: ₹{job.repairCost || 0}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#fb923c', fontWeight: '700' }}>
+                          Parts: ₹{job.partsCost || 0}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#4ade80', fontWeight: '800' }}>
+                          Total Cost: ₹{job.totalCost || ((job.repairCost || 0) + (job.partsCost || 0))}
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
 
                   {/* Action Buttons */}
@@ -1294,6 +1424,19 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                     • Work Performed: {job.attempts[0].workPerformed}
                   </Text>
                 )}
+                {(job.repairCost || job.partsCost || job.totalCost) ? (
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 4, paddingVertical: 4 }}>
+                    <Text style={{ fontSize: 11, color: '#38bdf8', fontWeight: '700' }}>
+                      Tech Labor: ₹{job.repairCost || 0}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#fb923c', fontWeight: '700' }}>
+                      Parts: ₹{job.partsCost || 0}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#4ade80', fontWeight: '800' }}>
+                      Total Cost: ₹{job.totalCost || ((job.repairCost || 0) + (job.partsCost || 0))}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             );
           })}
@@ -1730,6 +1873,83 @@ const styles = StyleSheet.create({
   // Model chips horizontal scroll
   modelHorizontalScroll: {
     marginVertical: 4,
+  },
+  modelSearchBoxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    borderRadius: borderRadius.md,
+    borderWidth: 1.5,
+    borderColor: '#334155',
+    paddingHorizontal: 12,
+    marginVertical: 4,
+  },
+  modelSearchInput: {
+    flex: 1,
+    height: 44,
+    color: '#ffffff',
+    fontSize: 14,
+  },
+  clearSearchBtn: {
+    padding: 6,
+  },
+  clearSearchBtnText: {
+    color: colors.textMuted,
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  activeModelIndicator: {
+    backgroundColor: 'rgba(37, 99, 235, 0.15)',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: borderRadius.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+    marginBottom: 6,
+  },
+  activeModelIndicatorText: {
+    color: '#94a3b8',
+    fontSize: 12,
+  },
+  modelSuggestionsCard: {
+    backgroundColor: '#1e293b',
+    borderRadius: borderRadius.md,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    marginBottom: 8,
+  },
+  modelSuggestionsHeader: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  modelSuggestionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  suggestedModelChip: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  suggestedModelChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primaryLight,
+  },
+  suggestedModelText: {
+    color: '#e2e8f0',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  suggestedModelTextActive: {
+    color: '#ffffff',
+    fontWeight: '800',
   },
   modelChip: {
     backgroundColor: colors.surfaceElevated,

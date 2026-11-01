@@ -26,16 +26,30 @@ export const MyRepairsScreen: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [reason, setReason] = useState('');
   const [partsDesc, setPartsDesc] = useState('');
+  const [repairCostInput, setRepairCostInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Quick Inline Note & Cost Modals
+  const [newNoteModalJob, setNewNoteModalJob] = useState<any | null>(null);
+  const [newNoteText, setNewNoteText] = useState('');
+  const [costModalJob, setCostModalJob] = useState<any | null>(null);
+  const [directCostInput, setDirectCostInput] = useState('');
+
   // Filter mode for Hardware Technician Workbench (defaults to INCOMING so handovers are immediately visible)
-  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'ALL'>('INCOMING');
+  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'EARNINGS' | 'ALL'>('INCOMING');
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['my_repairs_list'],
     queryFn: () => apiRequest('/repairs/my-repairs'),
     refetchInterval: 4000,
   });
+
+  const { data: payoutData, refetch: refetchPayouts } = useQuery({
+    queryKey: ['tech_payout_summary'],
+    queryFn: () => apiRequest('/repairs/payouts/summary'),
+    refetchInterval: 5000,
+  });
+  const payoutSummary = payoutData?.data;
 
   const jobs = data?.data || [];
 
@@ -119,6 +133,7 @@ export const MyRepairsScreen: React.FC = () => {
           workPerformed,
           repairNotes: notes,
           componentsReplaced: componentsReplaced.trim() || undefined,
+          repairCost: repairCostInput ? parseFloat(repairCostInput) : undefined,
         };
       } else if (action === 'not-possible') {
         if (!reason.trim()) {
@@ -150,12 +165,89 @@ export const MyRepairsScreen: React.FC = () => {
       setNotes('');
       setReason('');
       setPartsDesc('');
+      setRepairCostInput('');
+      refetch();
+      refetchPayouts();
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAddRepairNote = async () => {
+    if (!newNoteModalJob || !newNoteText.trim()) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/repairs/${newNoteModalJob.id}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ note: newNoteText.trim() }),
+      });
+      Alert.alert('Note Saved', 'Repair work note successfully added to device record.');
+      setNewNoteModalJob(null);
+      setNewNoteText('');
       refetch();
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleUpdateRepairCost = async () => {
+    if (!costModalJob) return;
+    const cost = parseFloat(directCostInput);
+    if (isNaN(cost) || cost < 0) {
+      Alert.alert('Invalid Cost', 'Please enter a valid numeric repair earning amount.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await apiRequest(`/repairs/${costModalJob.id}/cost`, {
+        method: 'PATCH',
+        body: JSON.stringify({ repairCost: cost }),
+      });
+      Alert.alert('Cost Updated', `Repair cost set to ₹${cost}. Manager and ledger updated.`);
+      setCostModalJob(null);
+      setDirectCostInput('');
+      refetch();
+      refetchPayouts();
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAcceptPayout = async (payoutId: string) => {
+    setSubmitting(true);
+    try {
+      await apiRequest(`/repairs/payouts/${payoutId}/accept`, { method: 'POST' });
+      Alert.alert('Payout Confirmed', 'You have accepted the payment. Your balance ledger is now updated!');
+      refetchPayouts();
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRejectPayout = async (payoutId: string) => {
+    Alert.prompt
+      ? Alert.prompt('Dispute Payout', 'Enter reason for disputing this payment:', async (disputeReason) => {
+          if (!disputeReason) return;
+          try {
+            await apiRequest(`/repairs/payouts/${payoutId}/reject`, {
+              method: 'POST',
+              body: JSON.stringify({ reason: disputeReason }),
+            });
+            Alert.alert('Dispute Logged', 'Manager notified of payment discrepancy.');
+            refetchPayouts();
+          } catch (err: any) {
+            Alert.alert('Error', err.message);
+          }
+        })
+      : Alert.alert('Dispute', 'Please inform the lab manager regarding payment discrepancy.');
   };
 
   return (
@@ -202,6 +294,15 @@ export const MyRepairsScreen: React.FC = () => {
         </TouchableOpacity>
 
         <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'EARNINGS' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('EARNINGS')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'EARNINGS' && styles.segmentTextActive]}>
+            💰 Ledger {payoutSummary ? `(₹${payoutSummary.balanceDue})` : ''}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.segmentBtn, filterMode === 'ALL' && styles.segmentBtnActive]}
           onPress={() => setFilterMode('ALL')}
         >
@@ -238,12 +339,159 @@ export const MyRepairsScreen: React.FC = () => {
         refreshControl={
           <RefreshControl
             refreshing={isLoading || isRefetching}
-            onRefresh={() => { refetch(); }}
+            onRefresh={() => {
+              refetch();
+              refetchPayouts();
+            }}
             tintColor={colors.primaryLight}
           />
         }
       >
-        {displayedJobs.length === 0 && !isLoading && (
+        {/* ---------------------------------------------------------------- */}
+        {/* EARNINGS & PAYOUTS LEDGER VIEW                                   */}
+        {/* ---------------------------------------------------------------- */}
+        {filterMode === 'EARNINGS' && (
+          <View style={styles.ledgerContainer}>
+            {/* 3 Metric Cards */}
+            <View style={styles.metricsRow}>
+              <View style={[styles.metricCard, { borderLeftColor: '#38bdf8' }]}>
+                <Text style={styles.metricLabel}>Total Work Done</Text>
+                <Text style={[styles.metricVal, { color: '#38bdf8' }]}>
+                  ₹{payoutSummary?.totalWorkDone || 0}
+                </Text>
+                <Text style={styles.metricSub}>{payoutSummary?.completedJobsCount || 0} repairs completed</Text>
+              </View>
+
+              <View style={[styles.metricCard, { borderLeftColor: '#22c55e' }]}>
+                <Text style={styles.metricLabel}>Total Paid Out</Text>
+                <Text style={[styles.metricVal, { color: '#22c55e' }]}>
+                  ₹{payoutSummary?.totalPaid || 0}
+                </Text>
+                <Text style={styles.metricSub}>Confirmed accepted</Text>
+              </View>
+
+              <View style={[styles.metricCard, { borderLeftColor: '#f59e0b' }]}>
+                <Text style={styles.metricLabel}>Balance Due</Text>
+                <Text style={[styles.metricVal, { color: '#f59e0b' }]}>
+                  ₹{payoutSummary?.balanceDue || 0}
+                </Text>
+                <Text style={styles.metricSub}>Pending from Lab</Text>
+              </View>
+            </View>
+
+            {/* Pending Payouts from Manager Awaiting Acceptance */}
+            <View style={styles.sectionHeaderBox}>
+              <Text style={styles.sectionTitle}>
+                💳 Pending Payouts ({payoutSummary?.payouts?.filter((p: any) => p.status === 'PENDING').length || 0})
+              </Text>
+              <Text style={styles.sectionSub}>Manager sent payments waiting for your receipt confirmation</Text>
+            </View>
+
+            {payoutSummary?.payouts?.filter((p: any) => p.status === 'PENDING').length === 0 ? (
+              <View style={styles.emptyPayoutBox}>
+                <Text style={styles.emptyPayoutText}>No pending payouts from manager right now.</Text>
+              </View>
+            ) : (
+              payoutSummary?.payouts
+                ?.filter((p: any) => p.status === 'PENDING')
+                .map((payout: any) => (
+                  <View key={payout.id} style={styles.pendingPayoutCard}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text style={styles.pendingPayoutAmount}>₹{payout.amount}</Text>
+                      <Text style={styles.pendingPayoutMeta}>
+                        Mode: <Text style={{ fontWeight: '700', color: colors.textPrimary }}>{payout.paymentMode}</Text> • By: {payout.paidBy?.name}
+                      </Text>
+                      {payout.notes && (
+                        <Text style={styles.pendingPayoutNotes}>Note: {payout.notes}</Text>
+                      )}
+                      <Text style={styles.pendingPayoutDate}>
+                        Initiated on {new Date(payout.paidAt).toLocaleString()}
+                      </Text>
+                    </View>
+                    <View style={styles.payoutBtnCol}>
+                      <TouchableOpacity
+                        style={styles.acceptPayoutBtn}
+                        onPress={() => handleAcceptPayout(payout.id)}
+                        disabled={submitting}
+                      >
+                        <Text style={styles.acceptPayoutBtnText}>🤝 Accept / Receive</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.rejectPayoutBtn}
+                        onPress={() => handleRejectPayout(payout.id)}
+                        disabled={submitting}
+                      >
+                        <Text style={styles.rejectPayoutBtnText}>❌ Dispute</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))
+            )}
+
+            {/* Recent Completed Repairs & Labor Earnings */}
+            <View style={[styles.sectionHeaderBox, { marginTop: spacing.md }]}>
+              <Text style={styles.sectionTitle}>
+                🛠️ Completed Repairs & Labor Earning
+              </Text>
+              <Text style={styles.sectionSub}>Breakdown of repairs submitted & approved</Text>
+            </View>
+
+            {(!payoutSummary?.recentJobs || payoutSummary.recentJobs.length === 0) ? (
+              <View style={styles.emptyPayoutBox}>
+                <Text style={styles.emptyPayoutText}>No completed repair jobs recorded yet.</Text>
+              </View>
+            ) : (
+              payoutSummary.recentJobs.map((rj: any) => (
+                <View key={rj.id} style={styles.recentJobEarnRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.recentJobModel}>{rj.device?.model?.name}</Text>
+                    <Text style={styles.recentJobImei}>
+                      IMEI: {maskIMEI(rj.device?.imeis?.[0]?.imei || 'NO-IMEI')} • #{rj.jobNumber}
+                    </Text>
+                    <Text style={styles.recentJobStatus}>Status: {rj.status}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.recentJobEarning}>
+                      + ₹{rj.repairCost || 0}
+                    </Text>
+                    <Text style={styles.recentJobDate}>
+                      {new Date(rj.updatedAt).toLocaleDateString()}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )}
+
+            {/* Payout History Ledger */}
+            <View style={[styles.sectionHeaderBox, { marginTop: spacing.md }]}>
+              <Text style={styles.sectionTitle}>📜 Accepted Payout History</Text>
+            </View>
+            {payoutSummary?.payouts?.filter((p: any) => p.status === 'ACCEPTED').length === 0 ? (
+              <View style={styles.emptyPayoutBox}>
+                <Text style={styles.emptyPayoutText}>No past payouts recorded yet.</Text>
+              </View>
+            ) : (
+              payoutSummary?.payouts
+                ?.filter((p: any) => p.status === 'ACCEPTED')
+                .map((payout: any) => (
+                  <View key={payout.id} style={styles.historyPayoutRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.historyPayoutAmount}>₹{payout.amount} ({payout.paymentMode})</Text>
+                      <Text style={styles.historyPayoutMeta}>
+                        Paid by {payout.paidBy?.name} • Received on {new Date(payout.acceptedAt || payout.paidAt).toLocaleDateString()}
+                      </Text>
+                    </View>
+                    <Text style={styles.settledBadge}>✓ SETTLED</Text>
+                  </View>
+                ))
+            )}
+          </View>
+        )}
+
+        {/* ---------------------------------------------------------------- */}
+        {/* WORKBENCH CARDS LIST VIEW                                        */}
+        {/* ---------------------------------------------------------------- */}
+        {filterMode !== 'EARNINGS' && displayedJobs.length === 0 && !isLoading && (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyIcon}>🛠️</Text>
             <Text style={styles.emptyTitle}>No Devices in This Section</Text>
@@ -257,7 +505,7 @@ export const MyRepairsScreen: React.FC = () => {
           </View>
         )}
 
-        {displayedJobs.map((job: any) => {
+        {filterMode !== 'EARNINGS' && displayedJobs.map((job: any) => {
           const device = job.device || {};
           const primaryImei = device.imeis?.find((i: any) => i.isPrimary)?.imei || device.imeis?.[0]?.imei || 'NO-IMEI';
           const isReturn = job.isReturnClaim;
@@ -295,6 +543,69 @@ export const MyRepairsScreen: React.FC = () => {
                     )}
                   </View>
                 )}
+
+                {/* Faults List */}
+                {device.faults && device.faults.length > 0 && (
+                  <View style={styles.cardFaultsWrap}>
+                    {device.faults.map((f: any, idx: number) => (
+                      <View key={idx} style={styles.cardFaultChip}>
+                        <Text style={styles.cardFaultChipText}>
+                          ⚡ {f.fault?.name || f.customFaultName}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Labor Earning Row */}
+                <View style={styles.cardCostRow}>
+                  <Text style={styles.cardCostLabel}>
+                    Labor Earning:{' '}
+                    <Text style={styles.cardCostValue}>
+                      {job.repairCost ? `₹${job.repairCost}` : 'Pending'}
+                    </Text>
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.setCostBtn}
+                    onPress={() => {
+                      setCostModalJob(job);
+                      setDirectCostInput(job.repairCost ? String(job.repairCost) : '');
+                    }}
+                  >
+                    <Text style={styles.setCostBtnText}>✏️ Set Cost</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Repair Work Performed Notes Section */}
+                <View style={styles.cardNotesSection}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.cardNotesTitle}>
+                      📝 Work Notes ({job.notes?.length || 0})
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.addNoteQuickBtn}
+                      onPress={() => {
+                        setNewNoteModalJob(job);
+                        setNewNoteText('');
+                      }}
+                    >
+                      <Text style={styles.addNoteQuickBtnText}>+ Add Work Note</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {job.notes && job.notes.length > 0 ? (
+                    <View style={styles.latestNoteBox}>
+                      <Text style={styles.latestNoteUser}>
+                        {job.notes[0].user?.name || 'Technician'} (
+                        {new Date(job.notes[0].createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}):
+                      </Text>
+                      <Text style={styles.latestNoteText} numberOfLines={2}>
+                        {job.notes[0].note}
+                      </Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.noNotesYet}>No notes logged yet. Tap + to record what work was done.</Text>
+                  )}
+                </View>
 
                 <View style={styles.cardFooter}>
                   <Text style={styles.jobNumber}>Job #{job.jobNumber}</Text>
@@ -362,6 +673,36 @@ export const MyRepairsScreen: React.FC = () => {
                       )}
                     </View>
                   )}
+
+                  {/* All Repair Work Notes on This Device */}
+                  <View style={styles.detailNotesCard}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <Text style={styles.detailNotesTitle}>
+                        📝 Work Log & Notes ({activeJob.notes?.length || 0})
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.detailAddNoteBtn}
+                        onPress={() => {
+                          setNewNoteModalJob(activeJob);
+                          setNewNoteText('');
+                        }}
+                      >
+                        <Text style={styles.detailAddNoteBtnText}>+ Add Note</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {activeJob.notes && activeJob.notes.length > 0 ? (
+                      activeJob.notes.map((n: any, idx: number) => (
+                        <View key={n.id || idx} style={styles.detailNoteRow}>
+                          <Text style={styles.detailNoteAuthor}>
+                            👤 {n.user?.name || 'Technician'} • {new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({new Date(n.createdAt).toLocaleDateString()}):
+                          </Text>
+                          <Text style={styles.detailNoteContent}>{n.note}</Text>
+                        </View>
+                      ))
+                    ) : (
+                      <Text style={styles.noNotesYet}>No notes logged yet. Tap + to record what work was done.</Text>
+                    )}
+                  </View>
 
                   {/* Dynamic Workflow Actions */}
                   {modalAction === null && (
@@ -465,6 +806,16 @@ export const MyRepairsScreen: React.FC = () => {
                         onChangeText={setNotes}
                       />
 
+                      <Text style={styles.label}>Repair Cost / Labor Earning (₹)</Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="e.g. 750 (Leave blank if not applicable)"
+                        placeholderTextColor={colors.textMuted}
+                        keyboardType="numeric"
+                        value={repairCostInput}
+                        onChangeText={setRepairCostInput}
+                      />
+
                       <TouchableOpacity
                         style={styles.actionBtnSuccess}
                         onPress={() => handleAction('submit-qc')}
@@ -562,6 +913,88 @@ export const MyRepairsScreen: React.FC = () => {
             >
               <Text style={styles.closeBtnText}>Close Window</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ADD REPAIR NOTE MODAL */}
+      <Modal visible={!!newNoteModalJob} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.compactModalContent}>
+            <Text style={styles.compactModalTitle}>
+              📝 Add Work Note ({newNoteModalJob?.jobNumber})
+            </Text>
+            <Text style={styles.compactModalSub}>
+              {newNoteModalJob?.device?.model?.name}
+            </Text>
+            <Text style={styles.label}>Work Details (Kya Kya Kaam Hua) *</Text>
+            <TextInput
+              style={[styles.input, { minHeight: 80 }]}
+              placeholder="e.g. Cleaned flux, checked VDD lines, reballed PMIC, tested 4.2V current draw normal..."
+              placeholderTextColor={colors.textMuted}
+              multiline
+              value={newNoteText}
+              onChangeText={setNewNoteText}
+            />
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={[styles.actionBtnPrimary, { flex: 1 }]}
+                onPress={handleAddRepairNote}
+                disabled={submitting}
+              >
+                {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Save Note</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionBtnSecondary, { flex: 1 }]}
+                onPress={() => {
+                  setNewNoteModalJob(null);
+                  setNewNoteText('');
+                }}
+              >
+                <Text style={styles.actionBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* SET REPAIR COST MODAL */}
+      <Modal visible={!!costModalJob} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.compactModalContent}>
+            <Text style={styles.compactModalTitle}>
+              💰 Set Repair Earning ({costModalJob?.jobNumber})
+            </Text>
+            <Text style={styles.compactModalSub}>
+              {costModalJob?.device?.model?.name}
+            </Text>
+            <Text style={styles.label}>Technician Labor Earning (₹) *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 750"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="numeric"
+              value={directCostInput}
+              onChangeText={setDirectCostInput}
+            />
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+              <TouchableOpacity
+                style={[styles.actionBtnPrimary, { flex: 1 }]}
+                onPress={handleUpdateRepairCost}
+                disabled={submitting}
+              >
+                {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>Save Cost</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionBtnSecondary, { flex: 1 }]}
+                onPress={() => {
+                  setCostModalJob(null);
+                  setDirectCostInput('');
+                }}
+              >
+                <Text style={styles.actionBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -911,5 +1344,330 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
+  },
+
+  // LEDGER & PAYOUTS STYLES
+  ledgerContainer: {
+    paddingHorizontal: spacing.sm,
+    paddingBottom: spacing.lg,
+  },
+  metricsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: spacing.sm,
+  },
+  metricCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    borderLeftWidth: 4,
+  },
+  metricLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  metricVal: {
+    fontSize: 18,
+    fontWeight: '900',
+    marginVertical: 2,
+  },
+  metricSub: {
+    color: colors.textSecondary,
+    fontSize: 9,
+  },
+  sectionHeaderBox: {
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  sectionTitle: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  sectionSub: {
+    color: colors.textMuted,
+    fontSize: 11,
+  },
+  emptyPayoutBox: {
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    marginVertical: spacing.xs,
+  },
+  emptyPayoutText: {
+    color: colors.textMuted,
+    fontSize: 12,
+  },
+  pendingPayoutCard: {
+    backgroundColor: '#1e293b',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginVertical: 4,
+    borderWidth: 1.5,
+    borderColor: '#38bdf8',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  pendingPayoutAmount: {
+    color: '#38bdf8',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  pendingPayoutMeta: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  pendingPayoutNotes: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+  pendingPayoutDate: {
+    color: colors.textMuted,
+    fontSize: 10,
+    marginTop: 4,
+  },
+  payoutBtnCol: {
+    gap: 6,
+  },
+  acceptPayoutBtn: {
+    backgroundColor: '#22c55e',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+  },
+  acceptPayoutBtnText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 11,
+  },
+  rejectPayoutBtn: {
+    backgroundColor: colors.surfaceElevated,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: borderRadius.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  rejectPayoutBtnText: {
+    color: colors.danger,
+    fontWeight: '700',
+    fontSize: 10,
+  },
+  recentJobEarnRow: {
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    borderRadius: borderRadius.sm,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 3,
+  },
+  recentJobModel: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  recentJobImei: {
+    color: colors.textSecondary,
+    fontSize: 11,
+  },
+  recentJobStatus: {
+    color: colors.primaryLight,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  recentJobEarning: {
+    color: '#22c55e',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  recentJobDate: {
+    color: colors.textMuted,
+    fontSize: 10,
+  },
+  historyPayoutRow: {
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    borderRadius: borderRadius.sm,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 3,
+  },
+  historyPayoutAmount: {
+    color: colors.textPrimary,
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  historyPayoutMeta: {
+    color: colors.textMuted,
+    fontSize: 11,
+  },
+  settledBadge: {
+    color: '#22c55e',
+    fontSize: 10,
+    fontWeight: '800',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+
+  // CARD EXTRA STYLES
+  cardFaultsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginVertical: 4,
+  },
+  cardFaultChip: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  cardFaultChipText: {
+    color: '#f87171',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  cardCostRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: borderRadius.sm,
+    marginVertical: 4,
+  },
+  cardCostLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  cardCostValue: {
+    color: '#38bdf8',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  setCostBtn: {
+    backgroundColor: 'rgba(56, 189, 248, 0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  setCostBtnText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  cardNotesSection: {
+    backgroundColor: colors.surfaceElevated,
+    padding: spacing.xs,
+    borderRadius: borderRadius.sm,
+    marginVertical: 4,
+  },
+  cardNotesTitle: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  addNoteQuickBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  addNoteQuickBtnText: {
+    color: colors.primaryLight,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  latestNoteBox: {
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    padding: 6,
+    borderRadius: 4,
+    marginTop: 4,
+  },
+  latestNoteUser: {
+    color: colors.primaryLight,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  latestNoteText: {
+    color: colors.textPrimary,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  noNotesYet: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+
+  // DETAIL NOTES & COMPACT MODAL STYLES
+  detailNotesCard: {
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    marginVertical: spacing.sm,
+  },
+  detailNotesTitle: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  detailAddNoteBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: borderRadius.sm,
+  },
+  detailAddNoteBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  detailNoteRow: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder,
+    paddingVertical: 6,
+  },
+  detailNoteAuthor: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  detailNoteContent: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  compactModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    width: '90%',
+    maxWidth: 400,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  compactModalTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  compactModalSub: {
+    color: colors.primaryLight,
+    fontSize: 12,
+    marginBottom: spacing.sm,
   },
 });

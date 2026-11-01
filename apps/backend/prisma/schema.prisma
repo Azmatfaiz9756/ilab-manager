@@ -97,6 +97,8 @@ model Lab {
   activityLogs    ActivityLog[]
   auditLogs       AuditLog[]
   notifications   Notification[]
+  rateCards       FaultRateCard[]
+  techPayouts     TechnicianPayout[]
 }
 
 model SubscriptionPlan {
@@ -149,6 +151,8 @@ model User {
   notifications   Notification[]
   activityLogs    ActivityLog[]
   auditLogs       AuditLog[]
+  payoutsReceived TechnicianPayout[] @relation("TechPayoutRecipient")
+  payoutsGiven    TechnicianPayout[] @relation("TechPayoutPayer")
 }
 
 model LabMembership {
@@ -177,6 +181,7 @@ model DeviceModel {
   createdAt       DateTime          @default(now())
 
   devices         Device[]
+  rateCards       FaultRateCard[]
 }
 
 model Device {
@@ -253,6 +258,7 @@ model Fault {
   createdAt       DateTime          @default(now())
 
   deviceFaults    DeviceFault[]
+  rateCards       FaultRateCard[]
 
   @@unique([categoryId, name, labId])
 }
@@ -284,6 +290,9 @@ model RepairJob {
   isReturnClaim   Boolean           @default(false)
   returnClaimId   String?           @unique
   returnClaim     ReturnClaim?      @relation("ClaimJob", fields: [returnClaimId], references: [id])
+  repairCost      Float?            @default(0) // Technician earning / labor cost
+  partsCost       Float?            @default(0) // QC / shop parts cost
+  totalCost       Float?            @default(0) // repairCost + partsCost
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
@@ -505,4 +514,41 @@ model AuditLog {
   createdAt       DateTime          @default(now())
 
   @@index([labId])
+}
+
+model FaultRateCard {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  modelId         String?
+  model           DeviceModel?      @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  faultId         String?
+  fault           Fault?            @relation(fields: [faultId], references: [id], onDelete: Cascade)
+  faultName       String?           // Custom fault name e.g. "Face ID Hide", "FID Not Available"
+  repairPrice     Float             @default(0) // Customer billing price
+  techEarning     Float             @default(0) // Hardware technician earning
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([labId])
+  @@index([modelId])
+}
+
+model TechnicianPayout {
+  id              String            @id @default(uuid())
+  labId           String
+  lab             Lab               @relation(fields: [labId], references: [id], onDelete: Cascade)
+  technicianId    String
+  technician      User              @relation("TechPayoutRecipient", fields: [technicianId], references: [id], onDelete: Cascade)
+  paidById        String
+  paidBy          User              @relation("TechPayoutPayer", fields: [paidById], references: [id], onDelete: Cascade)
+  amount          Float
+  paymentMode     String            @default("UPI") // CASH, UPI, BANK_TRANSFER
+  notes           String?
+  status          String            @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  paidAt          DateTime          @default(now())
+  acceptedAt      DateTime?
+
+  @@index([labId])
+  @@index([technicianId])
 }

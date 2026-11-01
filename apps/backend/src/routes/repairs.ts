@@ -68,6 +68,11 @@ router.get('/my-repairs', authenticateToken, requireLabTenant, async (req: Authe
           photos: true,
         },
       },
+      notes: {
+        include: { user: { select: { id: true, name: true, phone: true } } },
+        orderBy: { createdAt: 'desc' },
+      },
+      parts: true,
       assignments: {
         include: { technician: true, assignedBy: true },
         orderBy: { assignedAt: 'desc' },
@@ -91,6 +96,420 @@ router.get('/my-repairs', authenticateToken, requireLabTenant, async (req: Authe
   });
 
   res.json({ success: true, data: jobs });
+});
+
+/**
+ * -------------------------------------------------------------
+ * RATE CARD & FAULT PRICING MANAGEMENT (Lab Manager)
+ * -------------------------------------------------------------
+ */
+
+/**
+ * List Rate Cards
+ */
+router.get('/rate-card/list', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const { modelId } = req.query;
+
+  const where: any = { labId };
+  if (modelId) where.modelId = modelId as string;
+
+  const rateCards = await prisma.faultRateCard.findMany({
+    where,
+    include: {
+      model: { select: { id: true, name: true, family: true } },
+      fault: { select: { id: true, name: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json({ success: true, data: rateCards });
+});
+
+/**
+ * Add / Update Rate Card
+ */
+router.post('/rate-card', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const { modelId, faultId, faultName, repairPrice, techEarning } = req.body;
+
+  if (!modelId || repairPrice === undefined || techEarning === undefined) {
+    res.status(400).json({ success: false, message: 'modelId, repairPrice, and techEarning are required' });
+    return;
+  }
+
+  const card = await prisma.faultRateCard.create({
+    data: {
+      labId,
+      modelId,
+      faultId: faultId || null,
+      faultName: faultName || 'Standard Repair',
+      repairPrice: Number(repairPrice),
+      techEarning: Number(techEarning),
+    },
+    include: {
+      model: true,
+      fault: true,
+    },
+  });
+
+  res.status(201).json({ success: true, data: card });
+});
+
+/**
+ * Delete Rate Card
+ */
+router.delete('/rate-card/:id', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+
+  await prisma.faultRateCard.deleteMany({
+    where: { id: req.params.id, labId },
+  });
+
+  res.json({ success: true, message: 'Rate card entry removed' });
+});
+
+/**
+ * -------------------------------------------------------------
+ * TECHNICIAN PAYOUTS & EARNINGS LEDGER
+ * -------------------------------------------------------------
+ */
+
+/**
+ * Payouts & Earnings Summary
+ */
+router.get('/payouts/summary', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const currentUserId = req.user!.id;
+  const currentUserRole = req.user!.role;
+  const targetTechId = (req.query.technicianId as string) || (currentUserRole === UserRole.BOARD_TECHNICIAN ? currentUserId : undefined);
+
+  if (targetTechId) {
+    const tech = await prisma.user.findUnique({
+      where: { id: targetTechId },
+      select: { id: true, name: true, phone: true },
+    });
+
+    const jobs = await prisma.repairJob.findMany({
+      where: {
+        labId,
+        assignments: {
+          some: { technicianId: targetTechId },
+        },
+        status: {
+          in: [
+            DeviceStatus.QC_PASSED,
+            DeviceStatus.READY_FOR_DISPATCH,
+            DeviceStatus.DISPATCHED,
+            DeviceStatus.REPAIR_COMPLETED,
+            DeviceStatus.QC_PENDING,
+          ],
+        },
+      },
+      include: {
+        device: { include: { model: true, imeis: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const totalWorkDone = jobs.reduce((sum, j) => sum + (j.repairCost || 0), 0);
+    const totalPartsCost = jobs.reduce((sum, j) => sum + (j.partsCost || 0), 0);
+
+    const payouts = await prisma.technicianPayout.findMany({
+      where: { labId, technicianId: targetTechId },
+      include: {
+        paidBy: { select: { id: true, name: true } },
+      },
+      orderBy: { paidAt: 'desc' },
+    });
+
+    const totalPaid = payouts
+      .filter((p) => p.status === 'ACCEPTED')
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const pendingPayouts = payouts
+      .filter((p) => p.status === 'PENDING')
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const balanceDue = totalWorkDone - totalPaid;
+
+    res.json({
+      success: true,
+      data: {
+        technician: tech,
+        totalWorkDone,
+        totalPaid,
+        pendingPayouts,
+        balanceDue,
+        totalPartsCost,
+        completedJobsCount: jobs.length,
+        recentJobs: jobs.slice(0, 20),
+        payouts,
+      },
+    });
+    return;
+  }
+
+  // Manager all-technicians ledger
+  const techMemberships = await prisma.labMembership.findMany({
+    where: {
+      labId,
+      role: { in: [UserRole.BOARD_TECHNICIAN, UserRole.QC_TECHNICIAN] },
+    },
+    include: {
+      user: { select: { id: true, name: true, phone: true } },
+    },
+  });
+
+  const summaries = await Promise.all(
+    techMemberships.map(async (m) => {
+      const techId = m.userId;
+      const jobs = await prisma.repairJob.findMany({
+        where: {
+          labId,
+          assignments: { some: { technicianId: techId } },
+          status: {
+            in: [
+              DeviceStatus.QC_PASSED,
+              DeviceStatus.READY_FOR_DISPATCH,
+              DeviceStatus.DISPATCHED,
+              DeviceStatus.REPAIR_COMPLETED,
+              DeviceStatus.QC_PENDING,
+            ],
+          },
+        },
+        select: { repairCost: true, partsCost: true },
+      });
+
+      const totalWorkDone = jobs.reduce((sum, j) => sum + (j.repairCost || 0), 0);
+      const totalParts = jobs.reduce((sum, j) => sum + (j.partsCost || 0), 0);
+
+      const payouts = await prisma.technicianPayout.findMany({
+        where: { labId, technicianId: techId },
+        select: { amount: true, status: true },
+      });
+
+      const totalPaid = payouts.filter((p) => p.status === 'ACCEPTED').reduce((sum, p) => sum + p.amount, 0);
+      const pendingPayouts = payouts.filter((p) => p.status === 'PENDING').reduce((sum, p) => sum + p.amount, 0);
+
+      return {
+        technician: m.user,
+        totalWorkDone,
+        totalPaid,
+        pendingPayouts,
+        balanceDue: totalWorkDone - totalPaid,
+        totalParts,
+        completedJobsCount: jobs.length,
+      };
+    })
+  );
+
+  res.json({ success: true, data: { technicians: summaries } });
+});
+
+/**
+ * Manager Creates a Payout
+ */
+router.post('/payouts', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const currentUserId = req.user!.id;
+  const { technicianId, amount, paymentMode = 'UPI', notes } = req.body;
+
+  if (!technicianId || !amount || Number(amount) <= 0) {
+    res.status(400).json({ success: false, message: 'Technician ID and valid amount (> 0) required' });
+    return;
+  }
+
+  const payout = await prisma.technicianPayout.create({
+    data: {
+      labId,
+      technicianId,
+      paidById: currentUserId,
+      amount: Number(amount),
+      paymentMode,
+      notes: notes || null,
+      status: 'PENDING',
+    },
+    include: {
+      technician: { select: { id: true, name: true } },
+      paidBy: { select: { id: true, name: true } },
+    },
+  });
+
+  await prisma.notification.create({
+    data: {
+      labId,
+      userId: technicianId,
+      title: `New Payout: ₹${amount}`,
+      body: `Manager initiated a payout of ₹${amount} via ${paymentMode}. Please review and accept.`,
+      data: { payoutId: payout.id, amount },
+    },
+  });
+
+  res.status(201).json({ success: true, data: payout, message: 'Payout initiated successfully' });
+});
+
+/**
+ * Technician Accepts Payout
+ */
+router.post('/payouts/:id/accept', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+
+  const payout = await prisma.technicianPayout.findFirst({
+    where: { id: req.params.id, labId },
+  });
+
+  if (!payout) {
+    res.status(404).json({ success: false, message: 'Payout record not found' });
+    return;
+  }
+
+  const updated = await prisma.technicianPayout.update({
+    where: { id: payout.id },
+    data: {
+      status: 'ACCEPTED',
+      acceptedAt: new Date(),
+    },
+  });
+
+  await prisma.notification.create({
+    data: {
+      labId,
+      userId: payout.paidById,
+      title: `Payout Accepted: ₹${payout.amount}`,
+      body: `Technician confirmed receiving payout of ₹${payout.amount}.`,
+      data: { payoutId: payout.id },
+    },
+  });
+
+  res.json({ success: true, data: updated, message: 'Payout accepted and updated in ledger' });
+});
+
+/**
+ * Technician Rejects / Disputes Payout
+ */
+router.post('/payouts/:id/reject', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const { reason } = req.body;
+
+  const payout = await prisma.technicianPayout.findFirst({
+    where: { id: req.params.id, labId },
+  });
+
+  if (!payout) {
+    res.status(404).json({ success: false, message: 'Payout record not found' });
+    return;
+  }
+
+  const updated = await prisma.technicianPayout.update({
+    where: { id: payout.id },
+    data: {
+      status: 'REJECTED',
+      notes: reason ? `${payout.notes || ''} [Dispute: ${reason}]` : payout.notes,
+    },
+  });
+
+  res.json({ success: true, data: updated, message: 'Payout marked as rejected' });
+});
+
+/**
+ * -------------------------------------------------------------
+ * WORK PERFORMED NOTES & REPAIR COST API
+ * -------------------------------------------------------------
+ */
+
+/**
+ * Add Repair Note
+ */
+router.post('/:id/notes', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const userId = req.user!.id;
+  const { note } = req.body;
+
+  if (!note || !note.trim()) {
+    res.status(400).json({ success: false, message: 'Note text cannot be empty' });
+    return;
+  }
+
+  const job = await prisma.repairJob.findFirst({
+    where: { id: req.params.id, labId },
+  });
+
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Repair job not found' });
+    return;
+  }
+
+  const created = await prisma.repairNote.create({
+    data: {
+      repairJobId: job.id,
+      userId,
+      note: note.trim(),
+    },
+    include: {
+      user: { select: { id: true, name: true, phone: true } },
+    },
+  });
+
+  res.status(201).json({ success: true, data: created });
+});
+
+/**
+ * Get All Repair Notes
+ */
+router.get('/:id/notes', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+
+  const job = await prisma.repairJob.findFirst({
+    where: { id: req.params.id, labId },
+  });
+
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Repair job not found' });
+    return;
+  }
+
+  const notes = await prisma.repairNote.findMany({
+    where: { repairJobId: job.id },
+    include: {
+      user: { select: { id: true, name: true, phone: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json({ success: true, data: notes });
+});
+
+/**
+ * Update Repair Cost (Tech/Manager) or Parts Cost (QC/Manager)
+ */
+router.patch('/:id/cost', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const { repairCost, partsCost } = req.body;
+
+  const job = await prisma.repairJob.findFirst({
+    where: { id: req.params.id, labId },
+  });
+
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Repair job not found' });
+    return;
+  }
+
+  const newRepairCost = typeof repairCost === 'number' ? repairCost : job.repairCost;
+  const newPartsCost = typeof partsCost === 'number' ? partsCost : job.partsCost;
+  const newTotalCost = (newRepairCost || 0) + (newPartsCost || 0);
+
+  const updated = await prisma.repairJob.update({
+    where: { id: job.id },
+    data: {
+      repairCost: newRepairCost,
+      partsCost: newPartsCost,
+      totalCost: newTotalCost,
+    },
+  });
+
+  res.json({ success: true, data: updated });
 });
 
 /**
@@ -358,6 +777,19 @@ router.post('/:id/submit-qc', authenticateToken, requireLabTenant, async (req: A
     },
   });
 
+  // Update repair cost if provided
+  if (input.repairCost !== undefined) {
+    const partsCost = job.partsCost || 0;
+    const totalCost = input.repairCost + partsCost;
+    await prisma.repairJob.update({
+      where: { id: job.id },
+      data: {
+        repairCost: input.repairCost,
+        totalCost,
+      },
+    });
+  }
+
   // State transitions: REPAIR_COMPLETED -> QC_PENDING
   await StatusTransitionService.transition({
     labId,
@@ -464,6 +896,10 @@ router.get('/dispatch-list', authenticateToken, requireLabTenant, async (req: Au
           },
         },
         parts: true,
+        notes: {
+          include: { user: { select: { id: true, name: true, phone: true } } },
+          orderBy: { createdAt: 'desc' },
+        },
         assignments: {
           include: { technician: true },
           take: 1,
@@ -508,6 +944,7 @@ router.post('/:id/dispatch', authenticateToken, requireLabTenant, async (req: Au
     dispatchDate,
     extraFaults = [],
     partsUsed = [],
+    partsCost,
   } = req.body;
 
   const job = await prisma.repairJob.findFirst({
@@ -592,11 +1029,22 @@ router.post('/:id/dispatch', authenticateToken, requireLabTenant, async (req: Au
       },
     });
 
+    let partsTotal = typeof partsCost === 'number' ? partsCost : 0;
+    if (partsUsed && partsUsed.length > 0) {
+      for (const p of partsUsed) {
+        if (typeof p.cost === 'number') partsTotal += p.cost;
+      }
+    }
+    const finalPartsCost = partsTotal > 0 ? partsTotal : job.partsCost;
+    const finalTotalCost = (finalPartsCost || 0) + (job.repairCost || 0);
+
     await tx.repairJob.update({
       where: { id: job.id },
       data: {
         status: DeviceStatus.DISPATCHED,
         updatedAt: effectiveDate,
+        partsCost: finalPartsCost,
+        totalCost: finalTotalCost,
       },
     });
 

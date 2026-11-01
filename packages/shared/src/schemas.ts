@@ -87,6 +87,7 @@ export const submitToQCSchema = z.object({
   workPerformed: z.string().min(2, 'Summary of work performed is required'),
   repairNotes: z.string().min(2, 'Repair notes are required'),
   componentsReplaced: z.string().optional(),
+  repairCost: z.number().optional(),
 });
 
 export const qcVerificationSchema = z.object({
@@ -138,6 +139,7 @@ export const dispatchReturnSchema = z.object({
   dispatchNotes: z.string().optional(),
   dispatchDate: z.string().optional(),
   extraFaults: z.array(z.string()).optional(),
+  partsCost: z.number().optional(),
   partsUsed: z.array(
     z.object({
       partName: z.string().min(1),
