@@ -28,8 +28,8 @@ export const MyRepairsScreen: React.FC = () => {
   const [partsDesc, setPartsDesc] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Filter mode for Hardware Technician Workbench
-  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'ALL'>('ACTIVE');
+  // Filter mode for Hardware Technician Workbench (defaults to INCOMING so handovers are immediately visible)
+  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'ALL'>('INCOMING');
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['my_repairs_list'],
@@ -39,7 +39,11 @@ export const MyRepairsScreen: React.FC = () => {
 
   const jobs = data?.data || [];
 
-  const incomingJobs = jobs.filter((j: any) => j.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN);
+  const incomingJobs = jobs.filter(
+    (j: any) =>
+      j.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN ||
+      j.status === DeviceStatus.WAITING_FOR_ASSIGNMENT
+  );
   const returnJobs = jobs.filter((j: any) => j.isReturnClaim);
   const activeJobs = jobs.filter(
     (j: any) =>
@@ -49,6 +53,13 @@ export const MyRepairsScreen: React.FC = () => {
       j.status === DeviceStatus.PARTS_REQUIRED ||
       j.status === DeviceStatus.RETURN_TO_TECHNICIAN
   );
+
+  // Auto switch to INCOMING if incoming items arrive
+  React.useEffect(() => {
+    if (incomingJobs.length > 0 && activeJobs.length === 0 && filterMode === 'ACTIVE') {
+      setFilterMode('INCOMING');
+    }
+  }, [incomingJobs.length, activeJobs.length]);
 
   const displayedJobs =
     filterMode === 'INCOMING'
@@ -164,20 +175,20 @@ export const MyRepairsScreen: React.FC = () => {
       {/* Segmented Filter Bar */}
       <View style={styles.segmentedContainer}>
         <TouchableOpacity
-          style={[styles.segmentBtn, filterMode === 'ACTIVE' && styles.segmentBtnActive]}
-          onPress={() => setFilterMode('ACTIVE')}
-        >
-          <Text style={[styles.segmentText, filterMode === 'ACTIVE' && styles.segmentTextActive]}>
-            ⚡ Active ({activeJobs.length})
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
           style={[styles.segmentBtn, filterMode === 'INCOMING' && styles.segmentBtnActive]}
           onPress={() => setFilterMode('INCOMING')}
         >
           <Text style={[styles.segmentText, filterMode === 'INCOMING' && styles.segmentTextActive]}>
             📥 Incoming ({incomingJobs.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'ACTIVE' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('ACTIVE')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'ACTIVE' && styles.segmentTextActive]}>
+            ⚡ Active ({activeJobs.length})
           </Text>
         </TouchableOpacity>
 
@@ -201,7 +212,7 @@ export const MyRepairsScreen: React.FC = () => {
       </View>
 
       {/* Bulk Custody Handover Banner */}
-      {incomingJobs.length > 0 && filterMode === 'INCOMING' && (
+      {incomingJobs.length > 0 && (
         <View style={styles.handoverBanner}>
           <View style={{ flex: 1 }}>
             <Text style={styles.handoverBannerTitle}>Handover from QC Awaiting Custody</Text>
@@ -250,7 +261,9 @@ export const MyRepairsScreen: React.FC = () => {
           const device = job.device || {};
           const primaryImei = device.imeis?.find((i: any) => i.isPrimary)?.imei || device.imeis?.[0]?.imei || 'NO-IMEI';
           const isReturn = job.isReturnClaim;
-          const isIncoming = job.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN;
+          const isIncoming =
+            job.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN ||
+            job.status === DeviceStatus.WAITING_FOR_ASSIGNMENT;
 
           return (
             <View

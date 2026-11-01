@@ -101,6 +101,13 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
   const [assignedTechId, setAssignedTechId] = useState<string>('');
   const [batchName, setBatchName] = useState('');
 
+  // Auto-select technician if only 1 active board tech in lab
+  React.useEffect(() => {
+    if (technicians.length === 1 && !assignedTechId) {
+      setAssignedTechId(technicians[0].id);
+    }
+  }, [technicians, assignedTechId]);
+
   // Scanned Batch List
   const [batchItems, setBatchItems] = useState<BatchDeviceItem[]>([]);
   const [manualImeiInput, setManualImeiInput] = useState('');
@@ -753,6 +760,35 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                   onChangeText={setBatchName}
                 />
               </View>
+            </View>
+
+            {/* 3. ASSIGN TO HARDWARE TECHNICIAN */}
+            <View style={{ marginTop: spacing.sm }}>
+              <Text style={styles.label}>3. Assign to Hardware Technician (Target Workbench)</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.modelHorizontalScroll}>
+                {technicians.length === 0 ? (
+                  <View style={{ paddingVertical: 6 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                      No active Board Technicians found. Phones will enter General Queue.
+                    </Text>
+                  </View>
+                ) : (
+                  technicians.map((t: any) => {
+                    const isSelected = t.id === assignedTechId;
+                    return (
+                      <TouchableOpacity
+                        key={t.id}
+                        style={[styles.modelChip, isSelected && styles.techChipSelected]}
+                        onPress={() => setAssignedTechId(isSelected ? '' : t.id)}
+                      >
+                        <Text style={[styles.modelChipText, isSelected && styles.techChipTextSelected]}>
+                          {isSelected ? '✓ ' : '👤 '}{t.name} (Board Tech)
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </ScrollView>
             </View>
           </View>
 
@@ -1714,6 +1750,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   modelChipTextSelected: {
+    color: '#fff',
+    fontWeight: '800',
+  },
+  techChipSelected: {
+    backgroundColor: '#22c55e',
+    borderColor: '#22c55e',
+  },
+  techChipTextSelected: {
     color: '#fff',
     fontWeight: '800',
   },

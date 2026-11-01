@@ -19,6 +19,8 @@ export const ALLOWED_STATUS_TRANSITIONS: Record<DeviceStatus, DeviceStatus[]> = 
   ],
   [DeviceStatus.WAITING_FOR_ASSIGNMENT]: [
     DeviceStatus.ASSIGNED_TO_TECHNICIAN,
+    DeviceStatus.ACCEPTED_BY_TECHNICIAN,
+    DeviceStatus.REPAIR_IN_PROGRESS,
     DeviceStatus.CANCELLED,
   ],
   [DeviceStatus.ASSIGNED_TO_TECHNICIAN]: [

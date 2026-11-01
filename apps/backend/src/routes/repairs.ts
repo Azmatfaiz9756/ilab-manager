@@ -27,14 +27,26 @@ router.get('/my-repairs', authenticateToken, requireLabTenant, async (req: Authe
 
   const where: any = { labId };
 
-  // If technician, filter by jobs where they are currently assigned
+  // If technician, filter by jobs assigned to them, held by them, or general queue
   if (userRole === UserRole.BOARD_TECHNICIAN) {
-    where.assignments = {
-      some: {
-        technicianId: userId,
-        status: { in: ['ASSIGNED', 'ACCEPTED'] },
+    where.OR = [
+      {
+        assignments: {
+          some: {
+            technicianId: userId,
+            status: { in: ['ASSIGNED', 'ACCEPTED'] },
+          },
+        },
       },
-    };
+      {
+        device: {
+          currentHolderId: userId,
+        },
+      },
+      {
+        status: DeviceStatus.WAITING_FOR_ASSIGNMENT,
+      },
+    ];
   }
 
   if (status) {
@@ -97,10 +109,49 @@ router.post('/:id/accept', authenticateToken, requireLabTenant, async (req: Auth
     return;
   }
 
-  // Update assignment status
-  await prisma.jobAssignment.updateMany({
+  // Update or create assignment
+  const existingAssignment = await prisma.jobAssignment.findFirst({
     where: { repairJobId: job.id, technicianId: userId },
-    data: { status: 'ACCEPTED', acceptedAt: new Date() },
+  });
+
+  if (existingAssignment) {
+    await prisma.jobAssignment.update({
+      where: { id: existingAssignment.id },
+      data: { status: 'ACCEPTED', acceptedAt: new Date() },
+    });
+  } else {
+    await prisma.jobAssignment.create({
+      data: {
+        repairJobId: job.id,
+        technicianId: userId,
+        assignedById: userId,
+        status: 'ACCEPTED',
+        acceptedAt: new Date(),
+      },
+    });
+  }
+
+  // Ensure repair attempt exists
+  const existingAttempt = await prisma.repairAttempt.findFirst({
+    where: { repairJobId: job.id, technicianId: userId },
+  });
+  if (!existingAttempt) {
+    await prisma.repairAttempt.create({
+      data: {
+        repairJobId: job.id,
+        attemptNumber: 1,
+        technicianId: userId,
+      },
+    });
+  }
+
+  // Update device holder and department
+  await prisma.device.update({
+    where: { id: job.deviceId },
+    data: {
+      currentHolderId: userId,
+      currentDepartment: Department.BOARD_REPAIR,
+    },
   });
 
   await StatusTransitionService.transition({
