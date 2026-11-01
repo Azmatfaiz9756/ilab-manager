@@ -8,6 +8,8 @@ export const ALLOWED_STATUS_TRANSITIONS: Record<DeviceStatus, DeviceStatus[]> = 
     DeviceStatus.QC_INSPECTION,
     DeviceStatus.WAITING_FOR_ASSIGNMENT,
     DeviceStatus.ASSIGNED_TO_TECHNICIAN,
+    DeviceStatus.READY_FOR_DISPATCH,
+    DeviceStatus.DISPATCHED,
     DeviceStatus.CANCELLED,
   ],
   [DeviceStatus.QC_INSPECTION]: [
@@ -49,10 +51,13 @@ export const ALLOWED_STATUS_TRANSITIONS: Record<DeviceStatus, DeviceStatus[]> = 
   ],
   [DeviceStatus.REPAIR_COMPLETED]: [
     DeviceStatus.QC_PENDING,
+    DeviceStatus.READY_FOR_DISPATCH,
+    DeviceStatus.DISPATCHED,
   ],
   [DeviceStatus.REPAIR_NOT_POSSIBLE]: [
     DeviceStatus.QC_PENDING,
     DeviceStatus.READY_FOR_DISPATCH,
+    DeviceStatus.DISPATCHED,
     DeviceStatus.CANCELLED,
   ],
   [DeviceStatus.QC_PENDING]: [

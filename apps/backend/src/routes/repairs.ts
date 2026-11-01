@@ -340,4 +340,308 @@ router.post('/:id/submit-qc', authenticateToken, requireLabTenant, async (req: A
   res.json({ success: true, message: 'Repair submitted to QC verification queue' });
 });
 
+/**
+ * 7. List Devices for Return / Dispatch (with date-wise grouping, search, and status filter)
+ */
+router.get('/dispatch-list', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const { date, status, search, page = '1', limit = '50' } = req.query;
+
+  const pageNum = parseInt(page as string, 10) || 1;
+  const take = parseInt(limit as string, 10) || 50;
+  const skip = (pageNum - 1) * take;
+
+  const where: any = { labId };
+
+  if (status === 'DISPATCHED') {
+    where.status = DeviceStatus.DISPATCHED;
+  } else if (status === 'READY') {
+    where.status = {
+      in: [DeviceStatus.QC_PASSED, DeviceStatus.READY_FOR_DISPATCH, DeviceStatus.REPAIR_NOT_POSSIBLE],
+    };
+  } else if (status && status !== 'ALL') {
+    where.status = status as DeviceStatus;
+  }
+
+  // Date-wise filtering (ISO YYYY-MM-DD)
+  if (date) {
+    const targetDate = new Date(date as string);
+    if (!isNaN(targetDate.getTime())) {
+      const nextDay = new Date(targetDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      where.updatedAt = {
+        gte: targetDate,
+        lt: nextDay,
+      };
+    }
+  }
+
+  if (search) {
+    const term = (search as string).trim();
+    where.OR = [
+      { jobNumber: { contains: term, mode: 'insensitive' } },
+      { device: { imeis: { some: { imei: { contains: term } } } } },
+      { device: { model: { name: { contains: term, mode: 'insensitive' } } } },
+      { device: { receivedFrom: { contains: term, mode: 'insensitive' } } },
+    ];
+  }
+
+  const [total, jobs] = await Promise.all([
+    prisma.repairJob.count({ where }),
+    prisma.repairJob.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        device: {
+          include: {
+            model: true,
+            imeis: true,
+            faults: { include: { fault: true } },
+          },
+        },
+        parts: true,
+        assignments: {
+          include: { technician: true },
+          take: 1,
+          orderBy: { assignedAt: 'desc' },
+        },
+        attempts: {
+          take: 1,
+          orderBy: { attemptNumber: 'desc' },
+        },
+        qcInspections: {
+          take: 1,
+          orderBy: { testedAt: 'desc' },
+          include: { qcTechnician: true },
+        },
+      },
+    }),
+  ]);
+
+  res.json({
+    success: true,
+    data: jobs,
+    pagination: {
+      total,
+      page: pageNum,
+      pages: Math.ceil(total / take),
+      limit: take,
+    },
+  });
+});
+
+/**
+ * 8. Return / Dispatch Device to Customer / Dealer
+ * Supports adding extra faults found/repaired, parts replaced, work performed, and return date
+ */
+router.post('/:id/dispatch', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const userId = req.user!.id;
+  const {
+    returnedTo,
+    workPerformed,
+    dispatchNotes,
+    dispatchDate,
+    extraFaults = [],
+    partsUsed = [],
+  } = req.body;
+
+  const job = await prisma.repairJob.findFirst({
+    where: { id: req.params.id, labId },
+    include: {
+      device: true,
+      attempts: { orderBy: { attemptNumber: 'desc' }, take: 1 },
+    },
+  });
+
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Repair job not found' });
+    return;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // 1. Add any extra faults discovered or repaired
+    if (extraFaults && extraFaults.length > 0) {
+      for (const faultItem of extraFaults) {
+        if (!faultItem || !faultItem.trim()) continue;
+        const df = await tx.deviceFault.create({
+          data: {
+            deviceId: job.deviceId,
+            customFaultName: faultItem.trim(),
+            isResolved: true,
+          },
+        });
+        await tx.repairJobFault.create({
+          data: {
+            repairJobId: job.id,
+            deviceFaultId: df.id,
+          },
+        });
+      }
+    }
+
+    // 2. Add replacement parts used if provided
+    if (partsUsed && partsUsed.length > 0) {
+      for (const part of partsUsed) {
+        if (!part.partName || !part.partName.trim()) continue;
+        await tx.repairPart.create({
+          data: {
+            repairJobId: job.id,
+            partName: part.partName.trim(),
+            partNumber: part.partNumber?.trim() || null,
+            quantity: part.quantity || 1,
+            cost: typeof part.cost === 'number' ? part.cost : null,
+          },
+        });
+      }
+    }
+
+    // 3. Update attempt / notes
+    if (workPerformed && workPerformed.trim() && job.attempts.length > 0) {
+      const prevWork = job.attempts[0].workPerformed ? `${job.attempts[0].workPerformed}\n` : '';
+      await tx.repairAttempt.update({
+        where: { id: job.attempts[0].id },
+        data: {
+          workPerformed: `${prevWork}Handover Notes: ${workPerformed.trim()}`,
+        },
+      });
+    }
+
+    if (dispatchNotes && dispatchNotes.trim()) {
+      await tx.repairNote.create({
+        data: {
+          repairJobId: job.id,
+          userId,
+          note: `Handover / Return: ${dispatchNotes.trim()}${returnedTo ? ` (Handed to: ${returnedTo.trim()})` : ''}`,
+        },
+      });
+    }
+
+    // 4. Update device & job status to DISPATCHED
+    const effectiveDate = dispatchDate ? new Date(dispatchDate) : new Date();
+    await tx.device.update({
+      where: { id: job.deviceId },
+      data: {
+        currentStatus: DeviceStatus.DISPATCHED,
+        currentDepartment: Department.DISPATCH,
+        updatedAt: effectiveDate,
+      },
+    });
+
+    await tx.repairJob.update({
+      where: { id: job.id },
+      data: {
+        status: DeviceStatus.DISPATCHED,
+        updatedAt: effectiveDate,
+      },
+    });
+
+    // 5. Record movement: -> DISPATCH
+    await tx.deviceMovement.create({
+      data: {
+        labId,
+        deviceId: job.deviceId,
+        fromDepartment: job.device.currentDepartment,
+        toDepartment: Department.DISPATCH,
+        fromUserId: userId,
+        reason: returnedTo ? `Handed over / Dispatched to ${returnedTo.trim()}` : 'Device returned / Dispatched',
+        notes: dispatchNotes || workPerformed || undefined,
+        movedAt: effectiveDate,
+      },
+    });
+
+    // 6. Activity log
+    await tx.activityLog.create({
+      data: {
+        labId,
+        userId,
+        action: 'DEVICE_DISPATCH',
+        entityType: 'DEVICE',
+        entityId: job.deviceId,
+        metadata: {
+          jobNumber: job.jobNumber,
+          returnedTo,
+          dispatchNotes,
+          extraFaultsCount: extraFaults.length,
+          partsUsedCount: partsUsed.length,
+          dispatchDate: effectiveDate.toISOString(),
+        },
+      },
+    });
+  });
+
+  res.json({ success: true, message: `Device ${job.jobNumber} successfully returned and marked DISPATCHED` });
+});
+
+/**
+ * 9. Bulk Return / Dispatch Multiple Devices at Once
+ */
+router.post('/bulk-dispatch', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const userId = req.user!.id;
+  const { jobIds = [], returnedTo, dispatchNotes, dispatchDate } = req.body;
+
+  if (!Array.isArray(jobIds) || jobIds.length === 0) {
+    res.status(400).json({ success: false, message: 'At least one job ID is required for bulk return' });
+    return;
+  }
+
+  const effectiveDate = dispatchDate ? new Date(dispatchDate) : new Date();
+  let successCount = 0;
+
+  for (const jobId of jobIds) {
+    try {
+      const job = await prisma.repairJob.findFirst({
+        where: { id: jobId, labId },
+        include: { device: true },
+      });
+      if (!job) continue;
+
+      await prisma.$transaction(async (tx) => {
+        await tx.device.update({
+          where: { id: job.deviceId },
+          data: {
+            currentStatus: DeviceStatus.DISPATCHED,
+            currentDepartment: Department.DISPATCH,
+            updatedAt: effectiveDate,
+          },
+        });
+
+        await tx.repairJob.update({
+          where: { id: job.id },
+          data: {
+            status: DeviceStatus.DISPATCHED,
+            updatedAt: effectiveDate,
+          },
+        });
+
+        await tx.deviceMovement.create({
+          data: {
+            labId,
+            deviceId: job.deviceId,
+            fromDepartment: job.device.currentDepartment,
+            toDepartment: Department.DISPATCH,
+            fromUserId: userId,
+            reason: returnedTo ? `Bulk returned to ${returnedTo.trim()}` : 'Bulk return / Dispatch',
+            notes: dispatchNotes || undefined,
+            movedAt: effectiveDate,
+          },
+        });
+      });
+
+      successCount += 1;
+    } catch {
+      // Continue next job
+    }
+  }
+
+  res.json({
+    success: true,
+    message: `Bulk return complete: ${successCount} devices marked as DISPATCHED`,
+    data: { dispatchedCount: successCount },
+  });
+});
+
 export default router;

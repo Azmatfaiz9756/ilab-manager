@@ -108,9 +108,51 @@ export const qcVerificationSchema = z.object({
   reassignTechnicianId: z.string().optional(),
 });
 
+export const bulkDeviceIntakeSchema = z.object({
+  receivedFrom: z.string().optional(),
+  priority: z.enum([DevicePriority.NORMAL, DevicePriority.URGENT]).default(DevicePriority.NORMAL),
+  assignedTechnicianId: z.string().optional(),
+  batchName: z.string().optional(),
+  items: z.array(
+    z.object({
+      imei1: z.string().refine((val) => validateIMEILuhn(val).isValid, {
+        message: 'Invalid IMEI or Luhn check failed',
+      }),
+      imei2: z.string().optional(),
+      serialNumber: z.string().optional(),
+      modelId: z.string().min(1, 'Model required'),
+      color: z.string().optional(),
+      storage: z.string().optional(),
+      waterDamageStatus: z.boolean().default(false),
+      faultIds: z.array(z.string()).default([]),
+      customFaults: z.array(z.string()).default([]),
+      initialNotes: z.string().optional(),
+      priority: z.enum([DevicePriority.NORMAL, DevicePriority.URGENT]).optional(),
+    })
+  ).min(1, 'At least one device required in batch'),
+});
+
+export const dispatchReturnSchema = z.object({
+  returnedTo: z.string().optional(),
+  workPerformed: z.string().optional(),
+  dispatchNotes: z.string().optional(),
+  dispatchDate: z.string().optional(),
+  extraFaults: z.array(z.string()).optional(),
+  partsUsed: z.array(
+    z.object({
+      partName: z.string().min(1),
+      partNumber: z.string().optional(),
+      quantity: z.number().default(1),
+      cost: z.number().optional(),
+    })
+  ).optional(),
+});
+
 export type RegisterLabInput = z.infer<typeof registerLabSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
 export type NewDeviceIntakeInput = z.infer<typeof newDeviceIntakeSchema>;
+export type BulkDeviceIntakeInput = z.infer<typeof bulkDeviceIntakeSchema>;
+export type DispatchReturnInput = z.infer<typeof dispatchReturnSchema>;
 export type UpdateRepairProgressInput = z.infer<typeof updateRepairProgressSchema>;
 export type QCVerificationInput = z.infer<typeof qcVerificationSchema>;

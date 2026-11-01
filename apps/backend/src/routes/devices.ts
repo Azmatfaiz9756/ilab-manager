@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { prisma } from '../prisma';
 import {
   newDeviceIntakeSchema,
+  bulkDeviceIntakeSchema,
   DeviceStatus,
   Department,
   UserRole,
@@ -343,6 +344,230 @@ router.post('/intake', authenticateToken, requireLabTenant, async (req: Authenti
     });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message || 'Intake failed' });
+  }
+});
+
+/**
+ * Register Bulk Device Intake (Accept 1 to 50+ devices in one request)
+ */
+router.post('/bulk-intake', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const currentUserId = req.user!.id;
+
+  try {
+    const input = bulkDeviceIntakeSchema.parse(req.body);
+
+    const createdResults: any[] = [];
+    const failedItems: any[] = [];
+
+    // Pre-fetch all models for name resolution
+    const models = await prisma.deviceModel.findMany({ select: { id: true, name: true } });
+    const modelMap = new Map(models.map((m) => [m.id, m.name]));
+
+    // Get current year sequence starting point
+    const currentYear = new Date().getFullYear();
+    let currentJobCount = await prisma.repairJob.count({
+      where: {
+        labId,
+        createdAt: { gte: new Date(`${currentYear}-01-01T00:00:00.000Z`) },
+      },
+    });
+
+    for (const item of input.items) {
+      const cleanImei1 = item.imei1.trim();
+      const cleanImei2 = item.imei2 ? item.imei2.trim() : null;
+
+      try {
+        const luhn = validateIMEILuhn(cleanImei1);
+        if (!luhn.isValid) {
+          failedItems.push({ imei: cleanImei1, error: luhn.error || 'Invalid IMEI' });
+          continue;
+        }
+
+        const imeisToCheck = [cleanImei1];
+        if (cleanImei2) imeisToCheck.push(cleanImei2);
+
+        const claimEval = await ReturnClaimEngine.evaluate(
+          labId,
+          imeisToCheck,
+          item.faultIds || [],
+          item.customFaults || []
+        );
+
+        if (claimEval.existingDeviceId) {
+          const activeJob = await prisma.repairJob.findFirst({
+            where: {
+              labId,
+              deviceId: claimEval.existingDeviceId,
+              status: { notIn: [DeviceStatus.DISPATCHED, DeviceStatus.CANCELLED] },
+            },
+          });
+
+          if (activeJob) {
+            failedItems.push({
+              imei: cleanImei1,
+              error: `Already active in lab (Job: ${activeJob.jobNumber}, Status: ${activeJob.status})`,
+            });
+            continue;
+          }
+        }
+
+        currentJobCount += 1;
+        const jobNumber = `JOB-${currentYear}-${String(currentJobCount).padStart(4, '0')}`;
+        const itemPriority = item.priority || input.priority;
+        const initialStatus = input.assignedTechnicianId
+          ? DeviceStatus.ASSIGNED_TO_TECHNICIAN
+          : DeviceStatus.WAITING_FOR_ASSIGNMENT;
+        const initialDept = input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.INTAKE;
+
+        const itemResult = await prisma.$transaction(async (tx) => {
+          let deviceId = claimEval.existingDeviceId;
+
+          if (!deviceId) {
+            const newDev = await tx.device.create({
+              data: {
+                labId,
+                modelId: item.modelId,
+                serialNumber: item.serialNumber || null,
+                color: item.color || null,
+                storage: item.storage || null,
+                waterDamageStatus: item.waterDamageStatus,
+                receivedFrom: input.receivedFrom || null,
+                priority: itemPriority,
+                currentStatus: initialStatus,
+                currentDepartment: initialDept,
+                currentHolderId: input.assignedTechnicianId || currentUserId,
+                totalRepairCount: 1,
+                totalReturnCount: 0,
+                initialNotes: item.initialNotes || null,
+              },
+            });
+            deviceId = newDev.id;
+
+            await tx.deviceImei.create({
+              data: { labId, deviceId, imei: cleanImei1, isPrimary: true },
+            });
+
+            if (cleanImei2) {
+              await tx.deviceImei.create({
+                data: { labId, deviceId, imei: cleanImei2, isPrimary: false },
+              });
+            }
+          } else {
+            await tx.device.update({
+              where: { id: deviceId },
+              data: {
+                currentStatus: initialStatus,
+                currentDepartment: initialDept,
+                currentHolderId: input.assignedTechnicianId || currentUserId,
+                priority: itemPriority,
+                totalRepairCount: { increment: 1 },
+                totalReturnCount: claimEval.isReturnClaim ? { increment: 1 } : undefined,
+                initialNotes: item.initialNotes || null,
+              },
+            });
+          }
+
+          const createdDeviceFaultIds: string[] = [];
+          if (item.faultIds && item.faultIds.length > 0) {
+            for (const fId of item.faultIds) {
+              const df = await tx.deviceFault.create({ data: { deviceId, faultId: fId } });
+              createdDeviceFaultIds.push(df.id);
+            }
+          }
+          if (item.customFaults && item.customFaults.length > 0) {
+            for (const cName of item.customFaults) {
+              if (cName.trim()) {
+                const df = await tx.deviceFault.create({ data: { deviceId, customFaultName: cName.trim() } });
+                createdDeviceFaultIds.push(df.id);
+              }
+            }
+          }
+
+          let returnClaimRecord = null;
+          if (claimEval.isReturnClaim && claimEval.previousRepairJob) {
+            returnClaimRecord = await tx.returnClaim.create({
+              data: {
+                labId,
+                deviceId,
+                previousRepairJobId: claimEval.previousRepairJob.id,
+                claimType: claimEval.claimType!,
+              },
+            });
+          }
+
+          const repairJob = await tx.repairJob.create({
+            data: {
+              labId,
+              deviceId,
+              jobNumber,
+              status: initialStatus,
+              isReturnClaim: claimEval.isReturnClaim,
+              returnClaimId: returnClaimRecord ? returnClaimRecord.id : null,
+            },
+          });
+
+          for (const dfId of createdDeviceFaultIds) {
+            await tx.repairJobFault.create({
+              data: { repairJobId: repairJob.id, deviceFaultId: dfId },
+            });
+          }
+
+          if (input.assignedTechnicianId) {
+            await tx.repairAttempt.create({
+              data: {
+                repairJobId: repairJob.id,
+                attemptNumber: 1,
+                technicianId: input.assignedTechnicianId,
+              },
+            });
+            await tx.jobAssignment.create({
+              data: {
+                repairJobId: repairJob.id,
+                technicianId: input.assignedTechnicianId,
+                assignedById: currentUserId,
+                status: 'ASSIGNED',
+              },
+            });
+          }
+
+          await recordDeviceMovement({
+            labId,
+            deviceId,
+            fromDepartment: Department.INTAKE,
+            toDepartment: input.assignedTechnicianId ? Department.BOARD_REPAIR : Department.QC,
+            fromUserId: currentUserId,
+            toUserId: input.assignedTechnicianId || null,
+            reason: input.batchName ? `Batch Intake: ${input.batchName}` : 'Bulk Intake',
+          });
+
+          return { deviceId, jobNumber, modelName: modelMap.get(item.modelId) || 'iPhone' };
+        });
+
+        createdResults.push({
+          imei: cleanImei1,
+          jobNumber: itemResult.jobNumber,
+          deviceId: itemResult.deviceId,
+          modelName: itemResult.modelName,
+        });
+      } catch (err: any) {
+        failedItems.push({ imei: cleanImei1, error: err.message || 'Intake failed' });
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Batch intake processed: ${createdResults.length} created, ${failedItems.length} skipped`,
+      data: {
+        totalProcessed: input.items.length,
+        totalSuccess: createdResults.length,
+        totalFailed: failedItems.length,
+        created: createdResults,
+        failed: failedItems,
+      },
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message || 'Bulk intake failed' });
   }
 });
 
