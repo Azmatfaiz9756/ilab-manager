@@ -168,11 +168,14 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: 110,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: spacing.xs,
     marginBottom: spacing.md,
   },
   screenTitle: {

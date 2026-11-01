@@ -336,12 +336,14 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.md,
-    paddingBottom: spacing.xl * 2,
+    paddingTop: spacing.sm,
+    paddingBottom: 120,
   },
   screenTitle: {
     fontSize: 22,
     fontWeight: '800',
     color: colors.textPrimary,
+    marginTop: spacing.xs,
     marginBottom: spacing.md,
   },
   sectionCard: {

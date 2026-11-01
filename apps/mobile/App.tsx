@@ -1,7 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ActivityIndicator,
+  Platform,
+  StatusBar as NativeStatusBar,
+} from 'react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from './src/store/authStore';
 import { colors, spacing } from './src/theme/colors';
 
@@ -28,6 +37,10 @@ type Tab = 'dashboard' | 'intake' | 'repairs' | 'qc' | 'search' | 'team';
 function MainApp() {
   const { isAuthenticated, isLoading, initAuth } = useAuthStore();
   const [currentTab, setCurrentTab] = useState<Tab>('dashboard');
+  const insets = useSafeAreaInsets();
+
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (NativeStatusBar.currentHeight || 28) : 0);
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 12);
 
   useEffect(() => {
     initAuth();
@@ -35,7 +48,7 @@ function MainApp() {
 
   if (isLoading) {
     return (
-      <View style={styles.centerContainer}>
+      <View style={[styles.centerContainer, { paddingTop: topInset, paddingBottom: bottomInset }]}>
         <ActivityIndicator size="large" color={colors.primaryLight} />
       </View>
     );
@@ -46,7 +59,7 @@ function MainApp() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={[styles.safeArea, { paddingTop: topInset }]}>
       <StatusBar style="light" />
       <View style={styles.container}>
         {/* Active Tab Screen */}
@@ -59,12 +72,13 @@ function MainApp() {
           {currentTab === 'team' && <TeamScreen />}
         </View>
 
-        {/* Bottom Tab Bar */}
-        <View style={styles.tabBar}>
+        {/* Bottom Tab Bar with Safe Area margin */}
+        <View style={[styles.tabBar, { paddingBottom: bottomInset, minHeight: 56 + bottomInset }]}>
           <TouchableOpacity
             style={[styles.tabItem, currentTab === 'dashboard' && styles.activeTabItem]}
             onPress={() => setCurrentTab('dashboard')}
           >
+            <Text style={styles.tabIcon}>📊</Text>
             <Text style={[styles.tabLabel, currentTab === 'dashboard' && styles.activeTabLabel]}>Home</Text>
           </TouchableOpacity>
 
@@ -72,13 +86,15 @@ function MainApp() {
             style={[styles.tabItem, currentTab === 'intake' && styles.activeTabItem]}
             onPress={() => setCurrentTab('intake')}
           >
-            <Text style={[styles.tabLabel, currentTab === 'intake' && styles.activeTabLabel]}>+ Intake</Text>
+            <Text style={styles.tabIcon}>➕</Text>
+            <Text style={[styles.tabLabel, currentTab === 'intake' && styles.activeTabLabel]}>Intake</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.tabItem, currentTab === 'repairs' && styles.activeTabItem]}
             onPress={() => setCurrentTab('repairs')}
           >
+            <Text style={styles.tabIcon}>🔧</Text>
             <Text style={[styles.tabLabel, currentTab === 'repairs' && styles.activeTabLabel]}>Repairs</Text>
           </TouchableOpacity>
 
@@ -86,6 +102,7 @@ function MainApp() {
             style={[styles.tabItem, currentTab === 'qc' && styles.activeTabItem]}
             onPress={() => setCurrentTab('qc')}
           >
+            <Text style={styles.tabIcon}>✅</Text>
             <Text style={[styles.tabLabel, currentTab === 'qc' && styles.activeTabLabel]}>QC</Text>
           </TouchableOpacity>
 
@@ -93,6 +110,7 @@ function MainApp() {
             style={[styles.tabItem, currentTab === 'search' && styles.activeTabItem]}
             onPress={() => setCurrentTab('search')}
           >
+            <Text style={styles.tabIcon}>🔍</Text>
             <Text style={[styles.tabLabel, currentTab === 'search' && styles.activeTabLabel]}>Search</Text>
           </TouchableOpacity>
 
@@ -100,19 +118,22 @@ function MainApp() {
             style={[styles.tabItem, currentTab === 'team' && styles.activeTabItem]}
             onPress={() => setCurrentTab('team')}
           >
+            <Text style={styles.tabIcon}>👥</Text>
             <Text style={[styles.tabLabel, currentTab === 'team' && styles.activeTabLabel]}>Team</Text>
           </TouchableOpacity>
         </View>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <MainApp />
-    </QueryClientProvider>
+    <SafeAreaProvider>
+      <QueryClientProvider client={queryClient}>
+        <MainApp />
+      </QueryClientProvider>
+    </SafeAreaProvider>
   );
 }
 
@@ -139,20 +160,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderTopColor: colors.surfaceBorder,
-    paddingVertical: spacing.sm,
-    paddingBottom: spacing.sm,
+    paddingTop: 8,
   },
   tabItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 6,
+    justifyContent: 'center',
+    paddingVertical: 4,
+    borderTopWidth: 2,
+    borderTopColor: 'transparent',
   },
   activeTabItem: {
-    borderTopWidth: 2,
     borderTopColor: colors.primaryLight,
   },
+  tabIcon: {
+    fontSize: 16,
+    marginBottom: 3,
+  },
   tabLabel: {
-    fontSize: 11,
+    fontSize: 10,
     color: colors.textSecondary,
     fontWeight: '600',
   },

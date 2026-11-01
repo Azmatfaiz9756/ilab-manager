@@ -116,11 +116,14 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: 110,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: spacing.xs,
     marginBottom: spacing.lg,
     paddingBottom: spacing.sm,
     borderBottomWidth: 1,

@@ -10,12 +10,18 @@ import {
   Platform,
   ScrollView,
   Alert,
+  StatusBar as NativeStatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, spacing, borderRadius } from '../theme/colors';
 import { apiRequest, setServerHost, getCurrentHost } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 
 export const AuthScreen: React.FC = () => {
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (NativeStatusBar.currentHeight || 28) : 0);
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 16);
+
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [userIdOrEmail, setUserIdOrEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -107,10 +113,16 @@ export const AuthScreen: React.FC = () => {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { paddingTop: topInset, paddingBottom: bottomInset }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: spacing.md, paddingBottom: spacing.xl + 20 },
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.headerContainer}>
           <Text style={styles.brandTitle}>iLab Manager</Text>
           <Text style={styles.brandSubtitle}>
@@ -256,6 +268,7 @@ const styles = StyleSheet.create({
   },
   headerContainer: {
     alignItems: 'center',
+    marginTop: spacing.sm,
     marginBottom: spacing.xl,
   },
   brandTitle: {
