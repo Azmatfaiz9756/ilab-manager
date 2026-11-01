@@ -224,7 +224,7 @@ export const AuthScreen: React.FC = () => {
               <Text style={styles.serverConfigLabel}>Live Sync Server IP:Port</Text>
               <TextInput
                 style={styles.serverInput}
-                placeholder="192.168.0.165:4000"
+                placeholder="ilab-backend-npot.onrender.com"
                 placeholderTextColor={colors.textMuted}
                 autoCapitalize="none"
                 value={serverHostInput}

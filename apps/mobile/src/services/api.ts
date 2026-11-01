@@ -2,8 +2,8 @@ import * as SecureStore from 'expo-secure-store';
 import { useAuthStore } from '../store/authStore';
 
 const SERVER_HOST_KEY = 'ilab_server_host';
-// Default to the Cloudflare secure HTTPS tunnel, with fallback to local LAN IP
-let currentServerHost = 'systematic-tommy-sim-with.trycloudflare.com';
+// Default to the 24/7 Cloud Production Backend on Render
+let currentServerHost = 'ilab-backend-npot.onrender.com';
 
 export async function initServerHost(): Promise<string> {
   try {
@@ -24,7 +24,7 @@ export function getServerUrl(): string {
   if (currentServerHost.startsWith('http://') || currentServerHost.startsWith('https://')) {
     return `${currentServerHost.replace(/\/$/, '')}/api`;
   }
-  const isSecure = currentServerHost.includes('trycloudflare.com') || currentServerHost.includes('ngrok') || currentServerHost.includes('.com') || currentServerHost.includes('.app');
+  const isSecure = currentServerHost.includes('onrender.com') || currentServerHost.includes('trycloudflare.com') || currentServerHost.includes('ngrok') || currentServerHost.includes('.com') || currentServerHost.includes('.app');
   const protocol = isSecure ? 'https' : 'http';
   return `${protocol}://${currentServerHost}/api`;
 }
