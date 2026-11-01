@@ -8,7 +8,11 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.ilabmanager.app"
+      "bundleIdentifier": "com.ilabmanager.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "iLab Manager requires camera access to scan device IMEIs and barcodes.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.ilabmanager.app",
