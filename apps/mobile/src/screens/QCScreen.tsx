@@ -15,12 +15,14 @@ import { useQuery } from '@tanstack/react-query';
 import { colors, spacing, borderRadius } from '../theme/colors';
 import { apiRequest } from '../services/api';
 import { QCDecision } from '../shared';
+import { printSingleDeviceLabel } from '../services/labelPrinter';
 
 export const QCScreen: React.FC = () => {
   const [activeJob, setActiveJob] = useState<any | null>(null);
   const [failureReason, setFailureReason] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [printingId, setPrintingId] = useState<string | null>(null);
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['qc_pending_jobs'],
@@ -29,6 +31,31 @@ export const QCScreen: React.FC = () => {
   });
 
   const jobs = data?.data || [];
+
+  const handlePrintLabel = async (job: any, e?: any) => {
+    e?.stopPropagation?.();
+    const primaryImei = job.device?.imeis?.find((i: any) => i.isPrimary)?.imei || job.device?.imeis?.[0]?.imei || 'N/A';
+    const faultNames = (job.device?.faults || []).map((df: any) => df.fault?.name || df.customFaultName).filter(Boolean);
+
+    setPrintingId(job.id);
+    try {
+      await printSingleDeviceLabel(
+        {
+          imei: primaryImei,
+          modelName: job.device?.model?.name || 'iPhone',
+          jobNumber: job.jobNumber,
+          faults: faultNames,
+          priority: job.device?.priority || 'NORMAL',
+        },
+        {}
+      );
+      Alert.alert('Label Sent', `Label sent to thermal printer for ${primaryImei}.`);
+    } catch (err: any) {
+      Alert.alert('Print Error', err.message || 'Failed to print label');
+    } finally {
+      setPrintingId(null);
+    }
+  };
 
   const handleDecision = async (decision: QCDecision) => {
     if (!activeJob) return;
@@ -86,24 +113,55 @@ export const QCScreen: React.FC = () => {
         </View>
       )}
 
-      {jobs.map((job: any) => (
-        <TouchableOpacity
-          key={job.id}
-          style={styles.card}
-          onPress={() => setActiveJob(job)}
-        >
-          <View style={styles.cardRow}>
-            <Text style={styles.modelName}>{job.device?.model?.name}</Text>
-            <Text style={styles.jobNumber}>{job.jobNumber}</Text>
-          </View>
-          <Text style={styles.techText}>
-            Repaired by: {job.assignments?.[0]?.technician?.name || 'Technician'}
-          </Text>
-          <Text style={styles.diagnosisPreview}>
-            Diagnosis: {job.attempts?.[0]?.diagnosis || 'N/A'}
-          </Text>
-        </TouchableOpacity>
-      ))}
+      {jobs.map((job: any) => {
+        const primaryImei = job.device?.imeis?.find((i: any) => i.isPrimary)?.imei || job.device?.imeis?.[0]?.imei || 'N/A';
+        const faults = job.device?.faults || [];
+        return (
+          <TouchableOpacity
+            key={job.id}
+            style={styles.card}
+            onPress={() => setActiveJob(job)}
+          >
+            <View style={styles.cardRow}>
+              <Text style={styles.modelName}>{job.device?.model?.name}</Text>
+              <Text style={styles.jobNumber}>{job.jobNumber}</Text>
+            </View>
+
+            <View style={styles.imeiRow}>
+              <Text style={styles.imeiBadge}>IMEI: {primaryImei}</Text>
+              <TouchableOpacity
+                style={styles.printChipBtn}
+                onPress={(e) => handlePrintLabel(job, e)}
+                disabled={printingId === job.id}
+              >
+                {printingId === job.id ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.printChipBtnText}>🖨️ Label</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Diagnosed Faults Chips */}
+            {faults.length > 0 && (
+              <View style={styles.faultChipsRow}>
+                {faults.map((f: any, idx: number) => (
+                  <View key={f.id || idx} style={styles.faultChip}>
+                    <Text style={styles.faultChipText}>{f.fault?.name || f.customFaultName}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <Text style={styles.techText}>
+              Repaired by: <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{job.assignments?.[0]?.technician?.name || 'Technician'}</Text>
+            </Text>
+            <Text style={styles.diagnosisPreview}>
+              Diagnosis: {job.attempts?.[0]?.diagnosis || 'N/A'}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
 
       {/* QC Verification Modal */}
       <Modal visible={!!activeJob} transparent animationType="slide">
@@ -111,8 +169,39 @@ export const QCScreen: React.FC = () => {
           <View style={styles.modalContent}>
             {activeJob && (
               <>
-                <Text style={styles.modalTitle}>Inspect {activeJob.device?.model?.name}</Text>
-                <Text style={styles.modalSubtitle}>Job: {activeJob.jobNumber}</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View>
+                    <Text style={styles.modalTitle}>Inspect {activeJob.device?.model?.name}</Text>
+                    <Text style={styles.modalSubtitle}>Job: {activeJob.jobNumber}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.printChipBtn}
+                    onPress={() => handlePrintLabel(activeJob)}
+                    disabled={printingId === activeJob.id}
+                  >
+                    <Text style={styles.printChipBtnText}>🖨️ Print Label</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.modalImeiBox}>
+                  <Text style={styles.modalImeiText}>
+                    IMEI: {activeJob.device?.imeis?.find((i: any) => i.isPrimary)?.imei || activeJob.device?.imeis?.[0]?.imei || 'N/A'}
+                  </Text>
+                </View>
+
+                {/* Faults list */}
+                {(activeJob.device?.faults || []).length > 0 && (
+                  <View style={{ marginBottom: spacing.sm }}>
+                    <Text style={styles.label}>Original Diagnosed Faults:</Text>
+                    <View style={styles.faultChipsRow}>
+                      {activeJob.device.faults.map((f: any, idx: number) => (
+                        <View key={f.id || idx} style={styles.faultChip}>
+                          <Text style={styles.faultChipText}>{f.fault?.name || f.customFaultName}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
 
                 <View style={styles.infoBox}>
                   <Text style={styles.infoTitle}>Work Performed by Tech:</Text>
@@ -310,5 +399,64 @@ const styles = StyleSheet.create({
   },
   closeBtnText: {
     color: colors.textSecondary,
+  },
+  imeiRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 4,
+  },
+  imeiBadge: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    backgroundColor: colors.surfaceElevated,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: borderRadius.sm,
+    overflow: 'hidden',
+  },
+  printChipBtn: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: borderRadius.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  printChipBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  faultChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginVertical: 4,
+  },
+  faultChip: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  faultChipText: {
+    color: '#f87171',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  modalImeiBox: {
+    backgroundColor: colors.surfaceElevated,
+    padding: 8,
+    borderRadius: borderRadius.sm,
+    marginBottom: spacing.sm,
+  },
+  modalImeiText: {
+    color: colors.primaryLight,
+    fontWeight: '700',
+    fontSize: 13,
   },
 });

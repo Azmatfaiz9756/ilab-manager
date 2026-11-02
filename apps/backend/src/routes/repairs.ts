@@ -638,6 +638,95 @@ router.post('/:id/fulfill-part', authenticateToken, requireLabTenant, async (req
 });
 
 /**
+ * 1.5 Batch Accept All Incoming Repair Jobs into Technician Workbench (Atomic Fast Handover)
+ */
+router.post('/batch-accept', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const labId = req.user!.labId!;
+  const userId = req.user!.id;
+  const { jobIds } = req.body;
+
+  if (!Array.isArray(jobIds) || jobIds.length === 0) {
+    res.status(400).json({ success: false, message: 'jobIds array is required' });
+    return;
+  }
+
+  const jobs = await prisma.repairJob.findMany({
+    where: { id: { in: jobIds }, labId },
+  });
+
+  if (jobs.length === 0) {
+    res.status(404).json({ success: false, message: 'No matching repair jobs found' });
+    return;
+  }
+
+  let acceptedCount = 0;
+  for (const job of jobs) {
+    try {
+      const existingAssignment = await prisma.jobAssignment.findFirst({
+        where: { repairJobId: job.id, technicianId: userId },
+      });
+
+      if (existingAssignment) {
+        await prisma.jobAssignment.update({
+          where: { id: existingAssignment.id },
+          data: { status: 'ACCEPTED', acceptedAt: new Date() },
+        });
+      } else {
+        await prisma.jobAssignment.create({
+          data: {
+            repairJobId: job.id,
+            technicianId: userId,
+            assignedById: userId,
+            status: 'ACCEPTED',
+            acceptedAt: new Date(),
+          },
+        });
+      }
+
+      const existingAttempt = await prisma.repairAttempt.findFirst({
+        where: { repairJobId: job.id, technicianId: userId },
+      });
+      if (!existingAttempt) {
+        await prisma.repairAttempt.create({
+          data: {
+            repairJobId: job.id,
+            attemptNumber: 1,
+            technicianId: userId,
+          },
+        });
+      }
+
+      await prisma.device.update({
+        where: { id: job.deviceId },
+        data: {
+          currentHolderId: userId,
+          currentDepartment: Department.BOARD_REPAIR,
+        },
+      });
+
+      await StatusTransitionService.transition({
+        labId,
+        deviceId: job.deviceId,
+        repairJobId: job.id,
+        nextStatus: DeviceStatus.ACCEPTED_BY_TECHNICIAN,
+        userId,
+        reason: 'Technician accepted repair batch handover',
+      });
+
+      acceptedCount += 1;
+    } catch (err) {
+      console.warn(`Failed to accept job ${job.id}:`, err);
+    }
+  }
+
+  res.json({
+    success: true,
+    message: `Successfully accepted ${acceptedCount} devices into active workbench`,
+    count: acceptedCount,
+  });
+});
+
+/**
  * 1. Accept Repair Job
  */
 router.post('/:id/accept', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {

@@ -70,6 +70,93 @@ router.post('/check-imei', authenticateToken, requireLabTenant, async (req: Auth
 });
 
 /**
+ * Calculates technician earning automatically from active Rate Cards
+ */
+async function calculateAutoRepairCost(
+  labId: string,
+  modelId: string,
+  faultIds: string[],
+  customFaults: string[] = []
+): Promise<number> {
+  try {
+    const rateCards = await prisma.faultRateCard.findMany({
+      where: { labId, modelId },
+    });
+
+    if (rateCards.length === 0) return 0;
+
+    let totalCost = 0;
+    const appliedCardIds = new Set<string>();
+
+    for (const card of rateCards) {
+      let matched = false;
+      if (card.faultId && faultIds.includes(card.faultId)) {
+        matched = true;
+      } else if (card.faultName) {
+        const cardNameLower = card.faultName.toLowerCase().trim();
+        const inCustom = customFaults.some(
+          (cf) =>
+            cf.toLowerCase().trim().includes(cardNameLower) ||
+            cardNameLower.includes(cf.toLowerCase().trim())
+        );
+        if (inCustom) matched = true;
+      }
+
+      if (matched && !appliedCardIds.has(card.id)) {
+        totalCost += card.techEarning;
+        appliedCardIds.add(card.id);
+      }
+    }
+
+    return totalCost;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Safely generates collision-free sequential job numbers for a lab
+ */
+async function generateNextJobNumber(labId: string, currentYear: number): Promise<string> {
+  const latestJob = await prisma.repairJob.findFirst({
+    where: {
+      labId,
+      jobNumber: { startsWith: `JOB-${currentYear}-` },
+    },
+    orderBy: { jobNumber: 'desc' },
+    select: { jobNumber: true },
+  });
+
+  let nextSeq = 1;
+  if (latestJob && latestJob.jobNumber) {
+    const parts = latestJob.jobNumber.split('-');
+    if (parts.length === 3) {
+      const parsed = parseInt(parts[2], 10);
+      if (!isNaN(parsed)) {
+        nextSeq = parsed + 1;
+      }
+    }
+  }
+
+  let candidate = `JOB-${currentYear}-${String(nextSeq).padStart(4, '0')}`;
+  let exists = await prisma.repairJob.findFirst({
+    where: { labId, jobNumber: candidate },
+    select: { id: true },
+  });
+
+  while (exists) {
+    nextSeq += 1;
+    candidate = `JOB-${currentYear}-${String(nextSeq).padStart(4, '0')}`;
+    exists = await prisma.repairJob.findFirst({
+      where: { labId, jobNumber: candidate },
+      select: { id: true },
+    });
+  }
+
+  return candidate;
+}
+
+/**
  * Register New Device Intake (Transaction-safe, duplicate prevention, return claim creation)
  */
 router.post('/intake', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -112,15 +199,17 @@ router.post('/intake', authenticateToken, requireLabTenant, async (req: Authenti
       }
     }
 
-    // Generate unique job number for this lab: JOB-{YEAR}-{SEQUENCE}
+    // Generate unique collision-free job number for this lab: JOB-{YEAR}-{SEQUENCE}
     const currentYear = new Date().getFullYear();
-    const jobCount = await prisma.repairJob.count({
-      where: {
-        labId,
-        createdAt: { gte: new Date(`${currentYear}-01-01T00:00:00.000Z`) },
-      },
-    });
-    const jobNumber = `JOB-${currentYear}-${String(jobCount + 1).padStart(4, '0')}`;
+    const jobNumber = await generateNextJobNumber(labId, currentYear);
+
+    // Auto-calculate technician repair cost from active rate cards
+    const autoCost = await calculateAutoRepairCost(
+      labId,
+      input.modelId,
+      input.faultIds,
+      input.customFaults || []
+    );
 
     const initialStatus = input.assignedTechnicianId
       ? DeviceStatus.ASSIGNED_TO_TECHNICIAN
@@ -232,7 +321,7 @@ router.post('/intake', authenticateToken, requireLabTenant, async (req: Authenti
         });
       }
 
-      // Create Repair Job
+      // Create Repair Job (with auto-calculated rate card earnings)
       const repairJob = await tx.repairJob.create({
         data: {
           labId,
@@ -241,6 +330,8 @@ router.post('/intake', authenticateToken, requireLabTenant, async (req: Authenti
           status: initialStatus,
           isReturnClaim: claimEval.isReturnClaim,
           returnClaimId: returnClaimRecord ? returnClaimRecord.id : null,
+          repairCost: autoCost > 0 ? autoCost : null,
+          totalCost: autoCost > 0 ? autoCost : null,
         },
       });
 
@@ -416,8 +507,13 @@ router.post('/bulk-intake', authenticateToken, requireLabTenant, async (req: Aut
           }
         }
 
-        currentJobCount += 1;
-        const jobNumber = `JOB-${currentYear}-${String(currentJobCount).padStart(4, '0')}`;
+        const jobNumber = await generateNextJobNumber(labId, currentYear);
+        const autoCost = await calculateAutoRepairCost(
+          labId,
+          item.modelId,
+          item.faultIds || [],
+          item.customFaults || []
+        );
         const itemPriority = item.priority || input.priority;
         const initialStatus = input.assignedTechnicianId
           ? DeviceStatus.ASSIGNED_TO_TECHNICIAN
@@ -508,6 +604,8 @@ router.post('/bulk-intake', authenticateToken, requireLabTenant, async (req: Aut
               status: initialStatus,
               isReturnClaim: claimEval.isReturnClaim,
               returnClaimId: returnClaimRecord ? returnClaimRecord.id : null,
+              repairCost: autoCost > 0 ? autoCost : null,
+              totalCost: autoCost > 0 ? autoCost : null,
             },
           });
 

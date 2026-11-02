@@ -219,6 +219,35 @@ function MainApp() {
               </TouchableOpacity>
             </>
           )}
+
+          {/* Fallback Tabs for Viewer or New Accounts */}
+          {!isOwnerOrManager && !isHardwareTech && !isQCTech && (
+            <>
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'dashboard' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('dashboard')}
+              >
+                <Text style={styles.tabIcon}>📊</Text>
+                <Text style={[styles.tabLabel, currentTab === 'dashboard' && styles.activeTabLabel]}>Home</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'search' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('search')}
+              >
+                <Text style={styles.tabIcon}>🔍</Text>
+                <Text style={[styles.tabLabel, currentTab === 'search' && styles.activeTabLabel]}>Search</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabItem, currentTab === 'settings' && styles.activeTabItem]}
+                onPress={() => setCurrentTab('settings')}
+              >
+                <Text style={styles.tabIcon}>⚙️</Text>
+                <Text style={[styles.tabLabel, currentTab === 'settings' && styles.activeTabLabel]}>Settings</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
     </View>

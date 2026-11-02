@@ -82,7 +82,12 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
             ...customConfig,
             headers: requestHeaders,
           });
-          return await retryRes.json();
+          const retryText = await retryRes.text();
+          try {
+            return JSON.parse(retryText);
+          } catch {
+            return retryText as unknown as T;
+          }
         } else {
           await authStore.logout();
           throw new Error('Session expired. Please sign in again.');
@@ -93,10 +98,19 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
       }
     }
 
-    const data = await response.json();
+    const rawText = await response.text();
+    let data: any;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      if (response.status === 502 || response.status === 503 || response.status === 504) {
+        throw new Error('Cloud Server waking up from sleep. Please wait 10-15 seconds and try again.');
+      }
+      throw new Error(`Server returned ${response.status} (${response.statusText || 'Unexpected response'})`);
+    }
 
     if (!response.ok) {
-      throw new Error(data.message || `Server responded with status ${response.status}`);
+      throw new Error(data?.message || `Server responded with status ${response.status}`);
     }
 
     return data;

@@ -123,14 +123,20 @@ export const MyRepairsScreen: React.FC = () => {
     if (incomingJobs.length === 0) return;
     setSubmitting(true);
     try {
-      for (const j of incomingJobs) {
-        await apiRequest(`/repairs/${j.id}/accept`, { method: 'POST' });
-        await apiRequest(`/repairs/${j.id}/start`, { method: 'POST', body: JSON.stringify({}) });
-      }
-      Alert.alert('Batch Handover Complete', `Successfully accepted all ${incomingJobs.length} boards into active workbench.`);
+      const res = await apiRequest('/repairs/batch-accept', {
+        method: 'POST',
+        body: JSON.stringify({
+          jobIds: incomingJobs.map((j: any) => j.id),
+        }),
+      });
+      const acceptedCount = res.data?.acceptedCount || incomingJobs.length;
+      Alert.alert(
+        'Batch Handover Complete',
+        `Successfully accepted all ${acceptedCount} boards into your active workbench.`
+      );
       refetch();
     } catch (err: any) {
-      Alert.alert('Error', err.message);
+      Alert.alert('Batch Handover Error', err.message || 'Failed to accept batch');
     } finally {
       setSubmitting(false);
     }

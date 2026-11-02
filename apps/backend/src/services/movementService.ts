@@ -16,27 +16,36 @@ interface RecordMovementParams {
  * Creates an immutable movement record whenever a device changes location or holder
  */
 export async function recordDeviceMovement(params: RecordMovementParams, client: any = prisma) {
-  const movement = await client.deviceMovement.create({
-    data: {
-      labId: params.labId,
-      deviceId: params.deviceId,
-      fromDepartment: params.fromDepartment,
-      toDepartment: params.toDepartment,
-      fromUserId: params.fromUserId || null,
-      toUserId: params.toUserId || null,
-      reason: params.reason,
-      notes: params.notes || null,
-    },
-  });
+  try {
+    const movement = await client.deviceMovement.create({
+      data: {
+        labId: params.labId,
+        deviceId: params.deviceId,
+        fromDepartment: params.fromDepartment,
+        toDepartment: params.toDepartment,
+        fromUserId: params.fromUserId || null,
+        toUserId: params.toUserId || null,
+        reason: params.reason,
+        notes: params.notes || null,
+      },
+    });
 
-  // Update current department and holder on device
-  await client.device.update({
-    where: { id: params.deviceId },
-    data: {
-      currentDepartment: params.toDepartment,
-      currentHolderId: params.toUserId || null,
-    },
-  });
+    // Update current department and holder on device
+    try {
+      await client.device.update({
+        where: { id: params.deviceId },
+        data: {
+          currentDepartment: params.toDepartment,
+          currentHolderId: params.toUserId || null,
+        },
+      });
+    } catch (devUpdateErr) {
+      console.warn(`[MovementService] Non-fatal device update warning for ${params.deviceId}:`, devUpdateErr);
+    }
 
-  return movement;
+    return movement;
+  } catch (err) {
+    console.warn(`[MovementService] Non-fatal movement recording warning for ${params.deviceId}:`, err);
+    return null;
+  }
 }

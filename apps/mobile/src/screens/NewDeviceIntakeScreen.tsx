@@ -20,25 +20,8 @@ import { apiRequest } from '../services/api';
 import { validateIMEILuhn, DevicePriority, DeviceStatus, maskIMEI } from '../shared';
 import { StatusBadge } from '../components/StatusBadge';
 import { useSettingsStore } from '../store/settingsStore';
+import { useBatchIntakeStore, BatchDeviceItem } from '../store/batchIntakeStore';
 import { printLotLabels, printSingleDeviceLabel } from '../services/labelPrinter';
-
-interface BatchDeviceItem {
-  id: string;
-  imei1: string;
-  imei2?: string;
-  modelId: string;
-  modelName: string;
-  faultIds: string[];
-  customFaults: string[];
-  waterDamageStatus: boolean;
-  priority: DevicePriority;
-  initialNotes?: string;
-  isReturnClaim?: boolean;
-  claimType?: string;
-  previousJobNumber?: string;
-  previousTechName?: string;
-  previousDiagnosis?: string;
-}
 
 // ----------------------------------------------------
 // SMART IPHONE SHORTHAND & MODEL MATCHER
@@ -184,8 +167,37 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     );
   };
 
-  // Intake Mode: 'batch' | 'single'
-  const [intakeMode, setIntakeMode] = useState<'batch' | 'single'>('batch');
+  // Persistent Batch Intake Store (Preserved across tab switches & background)
+  const {
+    intakeMode,
+    setIntakeMode,
+    batchName,
+    setBatchName,
+    receivedFrom,
+    setReceivedFrom,
+    assignedTechId,
+    setAssignedTechId,
+    defaultModelId,
+    setDefaultModelId,
+    defaultFaultIds,
+    setDefaultFaultIds,
+    defaultCustomFaults,
+    setDefaultCustomFaults,
+    defaultPriority,
+    setDefaultPriority,
+    batchItems,
+    setBatchItems,
+    addBatchItem,
+    removeBatchItem,
+    updateBatchItem,
+    clearBatch,
+  } = useBatchIntakeStore();
+
+  // Single Phone Intake State
+  const [singleImei1, setSingleImei1] = useState('');
+  const [singleImei2, setSingleImei2] = useState('');
+  const [singleNotes, setSingleNotes] = useState('');
+  const [singleSubmitting, setSingleSubmitting] = useState(false);
 
   // ----------------------------------------------------
   // DATA FETCHING: Models, Faults, Team
@@ -221,17 +233,6 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     return list;
   }, [faultCategories]);
 
-  // ----------------------------------------------------
-  // BATCH INTAKE STATE
-  // ----------------------------------------------------
-  const [defaultModelId, setDefaultModelId] = useState<string>('');
-  const [defaultFaultIds, setDefaultFaultIds] = useState<string[]>([]);
-  const [defaultCustomFaults, setDefaultCustomFaults] = useState<string[]>([]);
-  const [receivedFrom, setReceivedFrom] = useState('');
-  const [defaultPriority, setDefaultPriority] = useState<DevicePriority>(DevicePriority.NORMAL);
-  const [assignedTechId, setAssignedTechId] = useState<string>('');
-  const [batchName, setBatchName] = useState('');
-
   // Smart iPhone Model Shorthand & Suggestions State
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [modelSuggestionsOpen, setModelSuggestionsOpen] = useState(false);
@@ -254,8 +255,6 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     }
   }, [technicians, assignedTechId]);
 
-  // Scanned Batch List
-  const [batchItems, setBatchItems] = useState<BatchDeviceItem[]>([]);
   const [manualImeiInput, setManualImeiInput] = useState('');
 
   // Expandable Category State for Fault Roots
@@ -327,8 +326,9 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
         if (checkRes.data.isInLabNow) {
           Alert.alert(
             'Device Already in Lab',
-            `IMEI ${clean} is currently active in the lab (Job: ${checkRes.data.currentActiveJob?.jobNumber}, Status: ${checkRes.data.currentActiveJob?.status}).`
+            `IMEI ${clean} is currently active in the lab (Job: ${checkRes.data.currentActiveJob?.jobNumber}, Status: ${checkRes.data.currentActiveJob?.status}). It cannot be re-entered until dispatched.`
           );
+          return false;
         }
 
         const evaluation = checkRes.data.evaluation;
@@ -403,7 +403,15 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
       }
       lastScanTimeRef.current = now;
       lastScannedImeiRef.current = candidateImei;
-      addImeiToBatch(candidateImei);
+
+      if (intakeMode === 'single') {
+        setSingleImei1(candidateImei);
+        setScannerOpen(false);
+        setScannerFeedbackBanner(`✅ Scanned IMEI: ${candidateImei}`);
+        setTimeout(() => setScannerFeedbackBanner(null), 3000);
+      } else {
+        addImeiToBatch(candidateImei);
+      }
     }
   };
 
@@ -460,12 +468,16 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
           {
             text: assignedTechId ? 'View Sent Phones ➔' : 'OK',
             onPress: () => {
-              setBatchItems([]);
-              setBatchName('');
+              if (totalFailed > 0 && failed.length > 0) {
+                const failedImeis = new Set(failed.map((f: any) => f.imei));
+                setBatchItems(batchItems.filter((b) => failedImeis.has(b.imei1)));
+              } else {
+                clearBatch();
+              }
               queryClient.invalidateQueries({ queryKey: ['sent_to_tech_jobs'] });
               queryClient.invalidateQueries({ queryKey: ['my_repairs_list'] });
               queryClient.invalidateQueries({ queryKey: ['dashboard_metrics'] });
-              if (assignedTechId) {
+              if (assignedTechId && totalSuccess > 0 && totalFailed === 0) {
                 setActiveSegment('sent_to_tech');
               }
               onSuccess?.();
@@ -480,6 +492,70 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     }
   };
 
+  // Submit Single Phone Intake
+  const handleSingleIntakeSubmit = async () => {
+    const cleanImei = singleImei1.trim();
+    if (!cleanImei) {
+      Alert.alert('Required', 'Please enter or scan Primary IMEI.');
+      return;
+    }
+    const luhn = validateIMEILuhn(cleanImei);
+    if (!luhn.isValid) {
+      Alert.alert('Invalid IMEI', luhn.error || 'Primary IMEI fails Luhn checksum.');
+      return;
+    }
+    if (singleImei2.trim()) {
+      const luhn2 = validateIMEILuhn(singleImei2.trim());
+      if (!luhn2.isValid) {
+        Alert.alert('Invalid Secondary IMEI', luhn2.error || 'Secondary IMEI fails Luhn checksum.');
+        return;
+      }
+    }
+    if (!defaultModelId) {
+      Alert.alert('Model Required', 'Please select an iPhone model.');
+      return;
+    }
+
+    setSingleSubmitting(true);
+    try {
+      const res = await apiRequest('/devices/intake', {
+        method: 'POST',
+        body: JSON.stringify({
+          imei1: cleanImei,
+          imei2: singleImei2.trim() || undefined,
+          modelId: defaultModelId,
+          faultIds: defaultFaultIds,
+          customFaults: defaultCustomFaults,
+          priority: defaultPriority,
+          assignedTechnicianId: assignedTechId || undefined,
+          initialNotes: singleNotes.trim() || undefined,
+        }),
+      });
+
+      if (res.success) {
+        const jn = res.data?.jobNumber || 'JOB';
+        Alert.alert(
+          'Device Registered Successfully',
+          `Job #${jn} created.\nStatus: ${assignedTechId ? 'Sent to Technician' : 'Received in Intake'}`
+        );
+        setSingleImei1('');
+        setSingleImei2('');
+        setSingleNotes('');
+        queryClient.invalidateQueries({ queryKey: ['sent_to_tech_jobs'] });
+        queryClient.invalidateQueries({ queryKey: ['my_repairs_list'] });
+        queryClient.invalidateQueries({ queryKey: ['dashboard_metrics'] });
+        if (assignedTechId) {
+          setActiveSegment('sent_to_tech');
+        }
+        onSuccess?.();
+      }
+    } catch (err: any) {
+      Alert.alert('Intake Error', err.message || 'Failed to register device');
+    } finally {
+      setSingleSubmitting(false);
+    }
+  };
+
   // ----------------------------------------------------
   // RETURN / WAPSI / DISPATCH STATE
   // ----------------------------------------------------
@@ -491,14 +567,15 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     queryKey: ['dispatch_list', returnStatusFilter, returnDateFilter, returnSearchQuery],
     queryFn: () => {
       let url = `/repairs/dispatch-list?status=${returnStatusFilter}&search=${encodeURIComponent(returnSearchQuery)}`;
+      const now = new Date();
       if (returnDateFilter === 'TODAY') {
-        const todayStr = new Date().toISOString().split('T')[0];
-        url += `&date=${todayStr}`;
+        const localTodayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        url += `&date=${localTodayStr}`;
       } else if (returnDateFilter === 'YESTERDAY') {
         const d = new Date();
         d.setDate(d.getDate() - 1);
-        const yestStr = d.toISOString().split('T')[0];
-        url += `&date=${yestStr}`;
+        const localYestStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        url += `&date=${localYestStr}`;
       }
       return apiRequest(url);
     },
@@ -706,10 +783,314 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
             </TouchableOpacity>
           </View>
 
-          {/* ---------------------------------------------------- */}
-          {/* A. BATCH PRESET BAR: Set Model & Fault Once for All  */}
-          {/* ---------------------------------------------------- */}
-          <View style={styles.presetCard}>
+          {intakeMode === 'single' ? (
+            <View style={styles.presetCard}>
+              <View style={styles.presetCardHeader}>
+                <Text style={styles.cardHeaderTitle}>📱 Single Device Intake</Text>
+                <Text style={styles.presetHint}>Register and diagnose one device with instant handover</Text>
+              </View>
+
+              {/* Primary IMEI Input + Scanner Button */}
+              <Text style={styles.label}>1. Primary IMEI (Required)*</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: spacing.sm }}>
+                <TextInput
+                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                  placeholder="Enter 15-digit IMEI"
+                  placeholderTextColor={colors.textMuted}
+                  value={singleImei1}
+                  onChangeText={setSingleImei1}
+                  keyboardType="number-pad"
+                  maxLength={15}
+                />
+                <TouchableOpacity
+                  style={[styles.manualAddBtn, { backgroundColor: colors.primary, paddingHorizontal: 16 }]}
+                  onPress={async () => {
+                    if (!cameraPermission?.granted) {
+                      const res = await requestCameraPermission();
+                      if (!res.granted) {
+                        Alert.alert('Camera Permission', 'Camera permission is required to scan IMEI barcode.');
+                        return;
+                      }
+                    }
+                    setScannerOpen(true);
+                  }}
+                >
+                  <Text style={{ color: '#fff', fontWeight: '700' }}>📷 Scan</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Secondary IMEI Input (Optional) */}
+              <Text style={styles.label}>2. Secondary IMEI / eSIM (Optional)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Optional secondary IMEI"
+                placeholderTextColor={colors.textMuted}
+                value={singleImei2}
+                onChangeText={setSingleImei2}
+                keyboardType="number-pad"
+                maxLength={15}
+              />
+
+              {/* iPhone Model Selector with Smart Shorthand */}
+              <Text style={styles.label}>3. iPhone Model (Type shorthand: e.g. 8, 12p, 16pm, 16)</Text>
+              <View style={styles.modelSearchBoxContainer}>
+                <Text style={{ fontSize: 16, marginRight: 6 }}>🔍</Text>
+                <TextInput
+                  style={styles.modelSearchInput}
+                  placeholder="Type shorthand (8, 12p, 16pm, 16 pro max...)"
+                  placeholderTextColor={colors.textMuted}
+                  value={modelSearchQuery}
+                  onChangeText={(text) => {
+                    setModelSearchQuery(text);
+                    setModelSuggestionsOpen(true);
+                  }}
+                  onFocus={() => setModelSuggestionsOpen(true)}
+                />
+                {modelSearchQuery.length > 0 && (
+                  <TouchableOpacity
+                    style={styles.clearSearchBtn}
+                    onPress={() => {
+                      setModelSearchQuery('');
+                      setModelSuggestionsOpen(false);
+                    }}
+                  >
+                    <Text style={styles.clearSearchBtnText}>✕</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {selectedModelObj && (
+                <View style={styles.activeModelIndicator}>
+                  <Text style={styles.activeModelIndicatorText}>
+                    ✓ Selected Model: <Text style={{ fontWeight: '700', color: colors.primaryLight }}>{selectedModelObj.name}</Text>
+                  </Text>
+                </View>
+              )}
+
+              {modelSuggestionsOpen && (
+                <View style={styles.modelSuggestionsCard}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <Text style={styles.modelSuggestionsHeader}>Select Model:</Text>
+                    <TouchableOpacity onPress={() => setModelSuggestionsOpen(false)}>
+                      <Text style={{ color: colors.textMuted, fontSize: 11 }}>Close ✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.modelSuggestionsGrid}>
+                    {(filteredModels.length > 0 ? filteredModels : models.slice(0, 8)).map((m: any) => {
+                      const isSelected = m.id === defaultModelId;
+                      return (
+                        <TouchableOpacity
+                          key={m.id}
+                          style={[styles.suggestedModelChip, isSelected && styles.suggestedModelChipActive]}
+                          onPress={() => {
+                            setDefaultModelId(m.id);
+                            setModelSearchQuery(m.name);
+                            setModelSuggestionsOpen(false);
+                          }}
+                        >
+                          <Text style={[styles.suggestedModelChipText, isSelected && styles.suggestedModelChipTextActive]}>
+                            {m.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+
+              {/* Faults Picker */}
+              <Text style={[styles.label, { marginTop: spacing.sm }]}>4. Diagnosed Faults</Text>
+              
+              <View style={styles.faultSearchBox}>
+                <TextInput
+                  style={styles.faultSearchInput}
+                  placeholder="Type fault name (e.g. face id, audio, no power...)"
+                  placeholderTextColor={colors.textMuted}
+                  value={faultSearchQuery}
+                  onChangeText={setFaultSearchQuery}
+                />
+                {faultSearchQuery.trim().length > 0 && (
+                  <TouchableOpacity
+                    style={styles.addCustomBtn}
+                    onPress={() => {
+                      const custom = faultSearchQuery.trim();
+                      if (custom && !defaultCustomFaults.includes(custom)) {
+                        setDefaultCustomFaults([...defaultCustomFaults, custom]);
+                      }
+                      setFaultSearchQuery('');
+                    }}
+                  >
+                    <Text style={styles.addCustomBtnText}>+ Add "{faultSearchQuery.trim()}"</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Suggestions */}
+              {filteredHeaderSuggestions.length > 0 && (
+                <View style={styles.suggestionsBox}>
+                  <Text style={styles.suggestionsTitle}>💡 Suggestions (Tap to add):</Text>
+                  <View style={styles.chipsRow}>
+                    {filteredHeaderSuggestions.map((sug) => {
+                      const alreadyAdded = defaultFaultIds.includes(sug.id);
+                      return (
+                        <TouchableOpacity
+                          key={sug.id}
+                          style={[styles.suggestionChip, alreadyAdded && styles.suggestionChipActive]}
+                          onPress={() => {
+                            if (!alreadyAdded) {
+                              setDefaultFaultIds([...defaultFaultIds, sug.id]);
+                            }
+                            setFaultSearchQuery('');
+                          }}
+                        >
+                          <Text style={styles.suggestionChipText}>
+                            {alreadyAdded ? '✓ ' : '+ '}{sug.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+
+              {/* Big Touch-Friendly Button to Expand All Fault Roots */}
+              <TouchableOpacity
+                style={styles.expandRootsBtn}
+                onPress={() => setExpandedCategoryId((prev) => (prev ? null : (faultCategories[0]?.id || 'all')))}
+              >
+                <Text style={styles.expandRootsBtnText}>
+                  {expandedCategoryId ? '▲ Collapse Fault Tree' : '▼ Expand All Fault Roots (Browse All)'}
+                </Text>
+              </TouchableOpacity>
+
+              {expandedCategoryId && (
+                <View style={styles.treeContainer}>
+                  {faultCategories.map((cat: any) => (
+                    <View key={cat.id} style={styles.catGroup}>
+                      <Text style={styles.catTitle}>{cat.name}</Text>
+                      <View style={styles.chipsRow}>
+                        {cat.faults.map((f: any) => {
+                          const isSel = defaultFaultIds.includes(f.id);
+                          return (
+                            <TouchableOpacity
+                              key={f.id}
+                              style={[styles.faultChip, isSel && styles.faultChipSelected]}
+                              onPress={() => {
+                                if (isSel) {
+                                  setDefaultFaultIds(defaultFaultIds.filter((id) => id !== f.id));
+                                } else {
+                                  setDefaultFaultIds([...defaultFaultIds, f.id]);
+                                }
+                              }}
+                            >
+                              <Text style={[styles.faultChipText, isSel && styles.faultChipTextSelected]}>
+                                {isSel ? '✓ ' : ''}{f.name}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {/* Selected Faults Tags */}
+              <View style={[styles.chipsRow, { marginTop: spacing.xs, marginBottom: spacing.sm }]}>
+                {defaultFaultIds.map((fId) => {
+                  const faultObj = allCatalogFaults.find((f: any) => f.id === fId);
+                  return (
+                    <View key={fId} style={styles.selectedTag}>
+                      <Text style={styles.selectedTagText}>✓ {faultObj?.name || 'Fault'}</Text>
+                      <TouchableOpacity onPress={() => setDefaultFaultIds(defaultFaultIds.filter((id) => id !== fId))}>
+                        <Text style={styles.removeTagText}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
+                {defaultCustomFaults.map((cName, idx) => (
+                  <View key={idx} style={[styles.selectedTag, { backgroundColor: 'rgba(234, 179, 8, 0.2)', borderColor: 'rgba(234, 179, 8, 0.4)' }]}>
+                    <Text style={[styles.selectedTagText, { color: colors.warning }]}>✓ {cName}</Text>
+                    <TouchableOpacity onPress={() => setDefaultCustomFaults(defaultCustomFaults.filter((_, i) => i !== idx))}>
+                      <Text style={[styles.removeTagText, { color: colors.warning }]}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+
+              {/* Priority */}
+              <Text style={styles.label}>5. Repair Priority</Text>
+              <View style={styles.priorityRow}>
+                {[DevicePriority.NORMAL, DevicePriority.URGENT].map((p) => (
+                  <TouchableOpacity
+                    key={p}
+                    style={[styles.priorityChip, defaultPriority === p && styles.priorityChipSelected]}
+                    onPress={() => setDefaultPriority(p)}
+                  >
+                    <Text style={[styles.priorityChipText, defaultPriority === p && styles.priorityChipTextSelected]}>
+                      {p === DevicePriority.URGENT ? '🔥 Urgent' : 'Normal'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Assign to Technician */}
+              <Text style={[styles.label, { marginTop: spacing.sm }]}>6. Assign Hardware Technician</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
+                <TouchableOpacity
+                  style={[styles.modelChip, !assignedTechId && styles.techChipSelected]}
+                  onPress={() => setAssignedTechId('')}
+                >
+                  <Text style={[styles.modelChipText, !assignedTechId && styles.techChipTextSelected]}>
+                    Keep in Intake Stock
+                  </Text>
+                </TouchableOpacity>
+                {technicians.map((t: any) => (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={[styles.modelChip, assignedTechId === t.id && styles.techChipSelected]}
+                    onPress={() => setAssignedTechId(t.id)}
+                  >
+                    <Text style={[styles.modelChipText, assignedTechId === t.id && styles.techChipTextSelected]}>
+                      🔧 {t.name} (Board Tech)
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+
+              {/* Notes */}
+              <Text style={[styles.label, { marginTop: spacing.sm }]}>7. Initial Notes</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Physical condition, customer complaints..."
+                placeholderTextColor={colors.textMuted}
+                value={singleNotes}
+                onChangeText={setSingleNotes}
+              />
+
+              {/* Single Intake Submit Button */}
+              <TouchableOpacity
+                style={[styles.submitBatchBtn, { marginTop: spacing.md }]}
+                onPress={handleSingleIntakeSubmit}
+                disabled={singleSubmitting}
+              >
+                {singleSubmitting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.submitBatchBtnText}>
+                    {assignedTechId
+                      ? `🚀 Send to ${technicians.find((t: any) => t.id === assignedTechId)?.name || 'Technician'}`
+                      : '📥 Register Single Phone'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              {/* ---------------------------------------------------- */}
+              {/* A. BATCH PRESET BAR: Set Model & Fault Once for All  */}
+              {/* ---------------------------------------------------- */}
+              <View style={styles.presetCard}>
             <View style={styles.presetCardHeader}>
               <Text style={styles.cardHeaderTitle}>⚡ Batch Template (Apply to All Phones)</Text>
               <Text style={styles.presetHint}>Set once — all scanned phones get this automatically</Text>
@@ -1212,8 +1593,10 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
               </TouchableOpacity>
             )}
           </View>
-        </ScrollView>
+        </>
       )}
+    </ScrollView>
+  )}
 
       {/* ======================================================== */}
       {/* TAB 1.5: SENT TO TECHNICIAN (LIVE WORKBENCH TRACKING)    */}
@@ -3310,5 +3693,194 @@ const styles = StyleSheet.create({
   emptyText: {
     color: colors.textSecondary,
     fontSize: 14,
+  },
+
+  // Single Phone Intake & Shared Form Styles
+  input: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    color: colors.textPrimary,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    marginBottom: spacing.sm,
+  },
+  manualAddBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  suggestedModelChipText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  suggestedModelChipTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  faultSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    paddingHorizontal: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  faultSearchInput: {
+    flex: 1,
+    color: colors.textPrimary,
+    paddingVertical: 8,
+    fontSize: 13,
+  },
+  chipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  suggestionChipActive: {
+    backgroundColor: 'rgba(59, 130, 246, 0.25)',
+    borderColor: colors.primary,
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  suggestionName: {
+    fontSize: 13,
+    color: colors.textPrimary,
+    fontWeight: '600',
+    marginRight: 6,
+  },
+  suggestionCategory: {
+    fontSize: 11,
+    color: colors.textMuted,
+  },
+  treeContainer: {
+    backgroundColor: colors.surfaceElevated,
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    marginVertical: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  catGroup: {
+    marginBottom: spacing.sm,
+  },
+  catTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primaryLight,
+    marginBottom: 4,
+  },
+  selectedTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  selectedTagText: {
+    color: colors.primaryLight,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  removeTagText: {
+    color: colors.primaryLight,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  priorityRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: spacing.xs,
+  },
+  priorityChip: {
+    flex: 1,
+    backgroundColor: colors.surfaceElevated,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  priorityChipSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primaryLight,
+  },
+  priorityChipText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  priorityChipTextSelected: {
+    color: '#fff',
+    fontWeight: '800',
+  },
+  techChip: {
+    backgroundColor: colors.surfaceElevated,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    marginRight: 6,
+  },
+  techChipText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chipsScroll: {
+    marginVertical: spacing.xs,
+  },
+  expandRootsBtn: {
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    borderRadius: borderRadius.md,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginVertical: spacing.xs,
+  },
+  expandRootsBtnText: {
+    color: colors.primaryLight,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  faultChip: {
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: borderRadius.sm,
+  },
+  faultChipSelected: {
+    backgroundColor: 'rgba(59, 130, 246, 0.25)',
+    borderColor: colors.primary,
+  },
+  faultChipText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  faultChipTextSelected: {
+    color: colors.primaryLight,
+    fontWeight: '700',
   },
 });

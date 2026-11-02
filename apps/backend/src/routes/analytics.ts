@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { prisma } from '../prisma';
 import { DeviceStatus, UserRole } from '@ilab/shared';
-import { AuthenticatedRequest, authenticateToken, requireLabTenant } from '../middleware/auth';
+import { AuthenticatedRequest, authenticateToken, requireLabTenant, requireRole } from '../middleware/auth';
 
 const router = Router();
 
@@ -246,7 +246,7 @@ router.get('/reports', authenticateToken, requireLabTenant, async (req: Authenti
 /**
  * Daily / Weekly / Monthly Profit & Loss (P&L) Analytics
  */
-router.get('/pnl', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+router.get('/pnl', authenticateToken, requireLabTenant, requireRole([UserRole.LAB_OWNER, UserRole.LAB_MANAGER]), async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   const labId = req.user!.labId!;
   const { period = 'month' } = req.query;
 
