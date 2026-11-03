@@ -37,6 +37,57 @@ interface RequestOptions extends RequestInit {
   requiresAuth?: boolean;
 }
 
+// Global Refresh Mutex to eliminate parallel 401 race conditions
+let activeRefreshPromise: Promise<string | null> | null = null;
+
+async function getFreshAccessToken(oldRefreshToken: string): Promise<string | null> {
+  if (activeRefreshPromise) {
+    return activeRefreshPromise;
+  }
+
+  activeRefreshPromise = (async () => {
+    try {
+      const baseUrl = getServerUrl();
+      const refreshRes = await fetch(`${baseUrl}/auth/refresh-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: oldRefreshToken }),
+      });
+
+      if (!refreshRes.ok) {
+        // Only log out if server definitively tells us the token is revoked (401/403)
+        if (refreshRes.status === 401 || refreshRes.status === 403) {
+          const authStore = useAuthStore.getState();
+          await authStore.logout();
+        }
+        return null;
+      }
+
+      const refreshData = await refreshRes.json();
+      const newAccessToken = refreshData.data?.accessToken;
+      const newRefreshToken = refreshData.data?.refreshToken;
+
+      if (newAccessToken) {
+        const authStore = useAuthStore.getState();
+        await authStore.updateAccessToken(newAccessToken);
+        if (newRefreshToken) {
+          await authStore.updateRefreshToken(newRefreshToken);
+        }
+        return newAccessToken;
+      }
+      return null;
+    } catch (networkErr) {
+      // NEVER log out on transient network failures or Render waking up
+      console.warn('[API] Token refresh network failure (preserved session):', networkErr);
+      return null;
+    } finally {
+      activeRefreshPromise = null;
+    }
+  })();
+
+  return activeRefreshPromise;
+}
+
 export async function apiRequest<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
   const { requiresAuth = true, headers = {}, ...customConfig } = options;
 
@@ -59,42 +110,20 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
   }
 
   try {
-    const response = await fetch(`${baseUrl}${endpoint}`, {
+    let response = await fetch(`${baseUrl}${endpoint}`, {
       ...customConfig,
       headers: requestHeaders,
     });
 
-    // Handle Token Refresh if 401
+    // Handle Token Refresh safely with Mutex
     if (response.status === 401 && requiresAuth && authStore.refreshToken) {
-      try {
-        const refreshRes = await fetch(`${baseUrl}/auth/refresh-token`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: authStore.refreshToken }),
+      const freshToken = await getFreshAccessToken(authStore.refreshToken);
+      if (freshToken) {
+        requestHeaders['Authorization'] = `Bearer ${freshToken}`;
+        response = await fetch(`${baseUrl}${endpoint}`, {
+          ...customConfig,
+          headers: requestHeaders,
         });
-
-        if (refreshRes.ok) {
-          const refreshData = await refreshRes.json();
-          await authStore.updateAccessToken(refreshData.data.accessToken);
-
-          requestHeaders['Authorization'] = `Bearer ${refreshData.data.accessToken}`;
-          const retryRes = await fetch(`${baseUrl}${endpoint}`, {
-            ...customConfig,
-            headers: requestHeaders,
-          });
-          const retryText = await retryRes.text();
-          try {
-            return JSON.parse(retryText);
-          } catch {
-            return retryText as unknown as T;
-          }
-        } else {
-          await authStore.logout();
-          throw new Error('Session expired. Please sign in again.');
-        }
-      } catch (err) {
-        await authStore.logout();
-        throw err;
       }
     }
 

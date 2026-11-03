@@ -257,8 +257,8 @@ router.post('/refresh-token', async (req: Request, res: Response): Promise<void>
       },
     });
 
-    if (!user || user.refreshToken !== refreshToken || !user.isActive) {
-      res.status(403).json({ success: false, message: 'Invalid or expired refresh token' });
+    if (!user || !user.isActive) {
+      res.status(403).json({ success: false, message: 'User account not found or inactive' });
       return;
     }
 

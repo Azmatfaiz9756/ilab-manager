@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   Platform,
   StatusBar as NativeStatusBar,
+  BackHandler,
+  Alert,
 } from 'react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
@@ -70,6 +72,35 @@ function MainApp() {
       }
     }
   }, [role]);
+
+  // Android Hardware Back Button navigation: Prevent accidental logouts
+  useEffect(() => {
+    const defaultTab: Tab = isHardwareTech ? 'repairs' : isQCTech ? 'intake' : 'dashboard';
+
+    const onBackPress = () => {
+      if (!isAuthenticated) return false;
+
+      // If user is on a secondary tab, take them back to their primary home tab
+      if (currentTab !== defaultTab) {
+        setCurrentTab(defaultTab);
+        return true;
+      }
+
+      // If already on primary tab, confirm before exiting without logging out
+      Alert.alert(
+        'Exit iLab Manager',
+        'Are you sure you want to exit the application?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Exit', onPress: () => BackHandler.exitApp() },
+        ]
+      );
+      return true;
+    };
+
+    const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => backSub.remove();
+  }, [currentTab, isAuthenticated, isHardwareTech, isQCTech]);
 
   if (isLoading) {
     return (

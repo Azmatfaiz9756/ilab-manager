@@ -26,6 +26,7 @@ interface AuthState {
   isLoading: boolean;
   setSession: (user: AuthUser, lab: ActiveLab | null, tokens: { accessToken: string; refreshToken: string }) => Promise<void>;
   updateAccessToken: (token: string) => Promise<void>;
+  updateRefreshToken: (token: string) => Promise<void>;
   logout: () => Promise<void>;
   initAuth: () => Promise<void>;
 }
@@ -46,36 +47,40 @@ export const useAuthStore = create<AuthState>((set) => ({
   initAuth: async () => {
     try {
       const [accessToken, refreshToken, userJson, labJson] = await Promise.all([
-        SecureStore.getItemAsync(ACCESS_TOKEN_KEY),
-        SecureStore.getItemAsync(REFRESH_TOKEN_KEY),
-        SecureStore.getItemAsync(USER_KEY),
-        SecureStore.getItemAsync(LAB_KEY),
+        SecureStore.getItemAsync(ACCESS_TOKEN_KEY).catch(() => null),
+        SecureStore.getItemAsync(REFRESH_TOKEN_KEY).catch(() => null),
+        SecureStore.getItemAsync(USER_KEY).catch(() => null),
+        SecureStore.getItemAsync(LAB_KEY).catch(() => null),
       ]);
 
-      if (accessToken && userJson) {
+      if (userJson && (accessToken || refreshToken)) {
         set({
-          accessToken,
-          refreshToken,
+          accessToken: accessToken || '',
+          refreshToken: refreshToken || '',
           user: JSON.parse(userJson),
           lab: labJson ? JSON.parse(labJson) : null,
           isAuthenticated: true,
           isLoading: false,
         });
       } else {
-        set({ isLoading: false });
+        set({ isLoading: false, isAuthenticated: false });
       }
     } catch {
-      set({ isLoading: false });
+      set({ isLoading: false, isAuthenticated: false });
     }
   },
 
   setSession: async (user, lab, tokens) => {
-    await Promise.all([
-      SecureStore.setItemAsync(ACCESS_TOKEN_KEY, tokens.accessToken),
-      SecureStore.setItemAsync(REFRESH_TOKEN_KEY, tokens.refreshToken),
-      SecureStore.setItemAsync(USER_KEY, JSON.stringify(user)),
-      lab ? SecureStore.setItemAsync(LAB_KEY, JSON.stringify(lab)) : Promise.resolve(),
-    ]);
+    try {
+      await Promise.all([
+        SecureStore.setItemAsync(ACCESS_TOKEN_KEY, tokens.accessToken).catch(() => null),
+        SecureStore.setItemAsync(REFRESH_TOKEN_KEY, tokens.refreshToken).catch(() => null),
+        SecureStore.setItemAsync(USER_KEY, JSON.stringify(user)).catch(() => null),
+        lab ? SecureStore.setItemAsync(LAB_KEY, JSON.stringify(lab)).catch(() => null) : Promise.resolve(),
+      ]);
+    } catch (storeErr) {
+      console.warn('[AuthStore] SecureStore write warning:', storeErr);
+    }
 
     set({
       user,
@@ -88,17 +93,28 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   updateAccessToken: async (accessToken) => {
-    await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken);
+    try {
+      await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken).catch(() => null);
+    } catch {}
     set({ accessToken });
   },
 
+  updateRefreshToken: async (refreshToken) => {
+    try {
+      await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken).catch(() => null);
+    } catch {}
+    set({ refreshToken });
+  },
+
   logout: async () => {
-    await Promise.all([
-      SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
-      SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
-      SecureStore.deleteItemAsync(USER_KEY),
-      SecureStore.deleteItemAsync(LAB_KEY),
-    ]);
+    try {
+      await Promise.all([
+        SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY).catch(() => null),
+        SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY).catch(() => null),
+        SecureStore.deleteItemAsync(USER_KEY).catch(() => null),
+        SecureStore.deleteItemAsync(LAB_KEY).catch(() => null),
+      ]);
+    } catch {}
 
     set({
       user: null,

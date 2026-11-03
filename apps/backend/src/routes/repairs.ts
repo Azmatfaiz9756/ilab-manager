@@ -606,19 +606,23 @@ router.post('/:id/fulfill-part', authenticateToken, requireLabTenant, async (req
       },
     });
 
-    // 3. Record Movement
-    await tx.deviceMovement.create({
-      data: {
-        labId,
-        deviceId: job.deviceId,
-        fromDepartment: Department.QC,
-        toDepartment: Department.BOARD_REPAIR,
-        fromUserId: userId,
-        toUserId: techId || null,
-        reason: partName ? `Part Provided: ${partName}` : 'Part Provided to Technician',
-        notes: notes || undefined,
-      },
-    });
+    // 3. Record Movement safely
+    try {
+      await tx.deviceMovement.create({
+        data: {
+          labId,
+          deviceId: job.deviceId,
+          fromDepartment: Department.QC,
+          toDepartment: Department.BOARD_REPAIR,
+          fromUserId: userId,
+          toUserId: techId || null,
+          reason: partName ? `Part Provided: ${partName}` : 'Part Provided to Technician',
+          notes: notes || undefined,
+        },
+      });
+    } catch (moveErr) {
+      console.warn('[Fulfill Part] Non-fatal movement recording warning:', moveErr);
+    }
 
     // 4. Notify Technician
     if (techId) {
@@ -1262,19 +1266,23 @@ router.post('/:id/dispatch', authenticateToken, requireLabTenant, async (req: Au
       },
     });
 
-    // 5. Record movement: -> DISPATCH
-    await tx.deviceMovement.create({
-      data: {
-        labId,
-        deviceId: job.deviceId,
-        fromDepartment: job.device.currentDepartment,
-        toDepartment: Department.DISPATCH,
-        fromUserId: userId,
-        reason: returnedTo ? `Handed over / Dispatched to ${returnedTo.trim()}` : 'Device returned / Dispatched',
-        notes: dispatchNotes || workPerformed || undefined,
-        movedAt: effectiveDate,
-      },
-    });
+    // 5. Record movement safely: -> DISPATCH
+    try {
+      await tx.deviceMovement.create({
+        data: {
+          labId,
+          deviceId: job.deviceId,
+          fromDepartment: job.device.currentDepartment,
+          toDepartment: Department.DISPATCH,
+          fromUserId: userId,
+          reason: returnedTo ? `Handed over / Dispatched to ${returnedTo.trim()}` : 'Device returned / Dispatched',
+          notes: dispatchNotes || workPerformed || undefined,
+          movedAt: effectiveDate,
+        },
+      });
+    } catch (moveErr) {
+      console.warn('[Dispatch] Non-fatal movement recording warning:', moveErr);
+    }
 
     // 6. Activity log
     await tx.activityLog.create({
