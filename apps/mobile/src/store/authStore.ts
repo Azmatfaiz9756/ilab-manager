@@ -36,7 +36,13 @@ const REFRESH_TOKEN_KEY = 'ilab_refresh_token';
 const USER_KEY = 'ilab_auth_user';
 const LAB_KEY = 'ilab_auth_lab';
 
-export const useAuthStore = create<AuthState>((set) => ({
+// Memory fallback cache across app lifecycle & re-renders
+let memoryUser: AuthUser | null = null;
+let memoryLab: ActiveLab | null = null;
+let memoryAccessToken: string | null = null;
+let memoryRefreshToken: string | null = null;
+
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   lab: null,
   accessToken: null,
@@ -45,6 +51,13 @@ export const useAuthStore = create<AuthState>((set) => ({
   isLoading: true,
 
   initAuth: async () => {
+    // If already authenticated in memory, preserve it
+    const currentState = get();
+    if (currentState.isAuthenticated && currentState.user) {
+      set({ isLoading: false });
+      return;
+    }
+
     try {
       const [accessToken, refreshToken, userJson, labJson] = await Promise.all([
         SecureStore.getItemAsync(ACCESS_TOKEN_KEY).catch(() => null),
@@ -54,11 +67,28 @@ export const useAuthStore = create<AuthState>((set) => ({
       ]);
 
       if (userJson && (accessToken || refreshToken)) {
+        const parsedUser = JSON.parse(userJson);
+        const parsedLab = labJson ? JSON.parse(labJson) : null;
+        memoryUser = parsedUser;
+        memoryLab = parsedLab;
+        memoryAccessToken = accessToken || '';
+        memoryRefreshToken = refreshToken || '';
+
         set({
           accessToken: accessToken || '',
           refreshToken: refreshToken || '',
-          user: JSON.parse(userJson),
-          lab: labJson ? JSON.parse(labJson) : null,
+          user: parsedUser,
+          lab: parsedLab,
+          isAuthenticated: true,
+          isLoading: false,
+        });
+      } else if (memoryUser && (memoryAccessToken || memoryRefreshToken)) {
+        // Fallback to in-memory cache
+        set({
+          accessToken: memoryAccessToken,
+          refreshToken: memoryRefreshToken,
+          user: memoryUser,
+          lab: memoryLab,
           isAuthenticated: true,
           isLoading: false,
         });
@@ -66,11 +96,27 @@ export const useAuthStore = create<AuthState>((set) => ({
         set({ isLoading: false, isAuthenticated: false });
       }
     } catch {
-      set({ isLoading: false, isAuthenticated: false });
+      if (memoryUser && (memoryAccessToken || memoryRefreshToken)) {
+        set({
+          accessToken: memoryAccessToken,
+          refreshToken: memoryRefreshToken,
+          user: memoryUser,
+          lab: memoryLab,
+          isAuthenticated: true,
+          isLoading: false,
+        });
+      } else {
+        set({ isLoading: false, isAuthenticated: false });
+      }
     }
   },
 
   setSession: async (user, lab, tokens) => {
+    memoryUser = user;
+    memoryLab = lab;
+    memoryAccessToken = tokens.accessToken;
+    memoryRefreshToken = tokens.refreshToken;
+
     try {
       await Promise.all([
         SecureStore.setItemAsync(ACCESS_TOKEN_KEY, tokens.accessToken).catch(() => null),
@@ -93,6 +139,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   updateAccessToken: async (accessToken) => {
+    memoryAccessToken = accessToken;
     try {
       await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken).catch(() => null);
     } catch {}
@@ -100,6 +147,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   updateRefreshToken: async (refreshToken) => {
+    memoryRefreshToken = refreshToken;
     try {
       await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken).catch(() => null);
     } catch {}
@@ -107,6 +155,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
+    memoryUser = null;
+    memoryLab = null;
+    memoryAccessToken = null;
+    memoryRefreshToken = null;
+
     try {
       await Promise.all([
         SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY).catch(() => null),

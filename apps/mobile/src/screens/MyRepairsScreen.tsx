@@ -39,7 +39,7 @@ export const MyRepairsScreen: React.FC = () => {
   const [directCostInput, setDirectCostInput] = useState('');
 
   // Filter mode for Hardware Technician Workbench (defaults to INCOMING so handovers are immediately visible)
-  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'RETURNS' | 'EARNINGS' | 'ALL'>('INCOMING');
+  const [filterMode, setFilterMode] = useState<'INCOMING' | 'ACTIVE' | 'PARTS' | 'RETURNS' | 'EARNINGS' | 'ALL'>('INCOMING');
 
   const handlePrintLabel = async (job: any) => {
     const dev = job.device || {};
@@ -74,6 +74,7 @@ export const MyRepairsScreen: React.FC = () => {
 
   const jobs = data?.data || [];
 
+  const partsWaitingJobs = jobs.filter((j: any) => j.status === DeviceStatus.PARTS_REQUIRED);
   const incomingJobs = jobs.filter(
     (j: any) =>
       j.status === DeviceStatus.ASSIGNED_TO_TECHNICIAN ||
@@ -85,7 +86,6 @@ export const MyRepairsScreen: React.FC = () => {
       j.status === DeviceStatus.ACCEPTED_BY_TECHNICIAN ||
       j.status === DeviceStatus.REPAIR_IN_PROGRESS ||
       j.status === DeviceStatus.ON_HOLD ||
-      j.status === DeviceStatus.PARTS_REQUIRED ||
       j.status === DeviceStatus.RETURN_TO_TECHNICIAN
   );
 
@@ -101,9 +101,24 @@ export const MyRepairsScreen: React.FC = () => {
       ? incomingJobs
       : filterMode === 'ACTIVE'
       ? activeJobs
+      : filterMode === 'PARTS'
+      ? partsWaitingJobs
       : filterMode === 'RETURNS'
       ? returnJobs
       : jobs;
+
+  const handleResumeRepair = async (jobId: string) => {
+    setSubmitting(true);
+    try {
+      await apiRequest(`/repairs/${jobId}/start`, { method: 'POST', body: JSON.stringify({}) });
+      Alert.alert('Repair Resumed', 'Custody and active board repair resumed on your workbench!');
+      refetch();
+    } catch (err: any) {
+      Alert.alert('Resume Error', err.message || 'Failed to resume repair');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const handleAcceptSingle = async (jobId: string) => {
     setSubmitting(true);
@@ -308,6 +323,15 @@ export const MyRepairsScreen: React.FC = () => {
         >
           <Text style={[styles.segmentText, filterMode === 'ACTIVE' && styles.segmentTextActive]}>
             ⚡ Active ({activeJobs.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.segmentBtn, filterMode === 'PARTS' && styles.segmentBtnActive]}
+          onPress={() => setFilterMode('PARTS')}
+        >
+          <Text style={[styles.segmentText, filterMode === 'PARTS' && styles.segmentTextActive]}>
+            📦 Parts ({partsWaitingJobs.length})
           </Text>
         </TouchableOpacity>
 
@@ -571,6 +595,24 @@ export const MyRepairsScreen: React.FC = () => {
                   </View>
                 )}
 
+                {/* Parts Demanded Alert Banner */}
+                {job.status === DeviceStatus.PARTS_REQUIRED && (
+                  <View style={styles.partsDemandedBanner}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <Text style={styles.partsDemandedTitle}>📦 Parts Demanded from QC:</Text>
+                      <View style={styles.waitingBadge}>
+                        <Text style={styles.waitingBadgeText}>⏳ With QC Sourcing</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.partsDemandedDesc}>
+                      "{job.attempts?.[0]?.partsRequiredDesc || 'Spare component requested'}"
+                    </Text>
+                    <Text style={styles.partsDemandedHint}>
+                      Custody with QC/Manager. When part is provided, board automatically unlocks here.
+                    </Text>
+                  </View>
+                )}
+
                 {/* Faults List */}
                 {device.faults && device.faults.length > 0 && (
                   <View style={styles.cardFaultsWrap}>
@@ -650,7 +692,7 @@ export const MyRepairsScreen: React.FC = () => {
                 </View>
               </TouchableOpacity>
 
-              {/* Quick Inline Action for Incoming Devices */}
+              {/* Quick Inline Action for Incoming or Parts Devices */}
               {isIncoming ? (
                 <View style={styles.inlineActionRow}>
                   <TouchableOpacity
@@ -659,6 +701,16 @@ export const MyRepairsScreen: React.FC = () => {
                     disabled={submitting}
                   >
                     <Text style={styles.quickAcceptText}>🤝 Accept Custody & Start Repair</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : job.status === DeviceStatus.PARTS_REQUIRED ? (
+                <View style={styles.inlineActionRow}>
+                  <TouchableOpacity
+                    style={styles.partsResumeBtn}
+                    onPress={() => handleResumeRepair(job.id)}
+                    disabled={submitting}
+                  >
+                    <Text style={styles.partsResumeBtnText}>⚡ Part Received by Hand? Resume Repair</Text>
                   </TouchableOpacity>
                 </View>
               ) : (
@@ -1717,5 +1769,57 @@ const styles = StyleSheet.create({
     color: colors.primaryLight,
     fontSize: 12,
     marginBottom: spacing.sm,
+  },
+
+  // PARTS DEMANDED BENCHMARK STYLES
+  partsDemandedBanner: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderColor: '#f59e0b',
+    borderWidth: 1,
+    borderRadius: borderRadius.sm,
+    padding: spacing.sm,
+    marginVertical: spacing.xs,
+  },
+  partsDemandedTitle: {
+    color: '#f59e0b',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  waitingBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  waitingBadgeText: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  partsDemandedDesc: {
+    color: '#fef3c7',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  partsDemandedHint: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  partsResumeBtn: {
+    backgroundColor: '#d97706',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+  },
+  partsResumeBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
   },
 });

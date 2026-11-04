@@ -55,11 +55,7 @@ async function getFreshAccessToken(oldRefreshToken: string): Promise<string | nu
       });
 
       if (!refreshRes.ok) {
-        // Only log out if server definitively tells us the token is revoked (401/403)
-        if (refreshRes.status === 401 || refreshRes.status === 403) {
-          const authStore = useAuthStore.getState();
-          await authStore.logout();
-        }
+        console.warn(`[API] Token refresh returned HTTP ${refreshRes.status} (preserving active session)`);
         return null;
       }
 

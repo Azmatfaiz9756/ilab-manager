@@ -127,6 +127,10 @@ router.get('/parts-required-list', authenticateToken, requireLabTenant, async (r
         orderBy: { attemptNumber: 'desc' },
       },
       parts: true,
+      notes: {
+        include: { user: { select: { id: true, name: true } } },
+        orderBy: { createdAt: 'desc' },
+      },
     },
     orderBy: { updatedAt: 'desc' },
   });
@@ -873,7 +877,7 @@ router.post('/:id/hold', authenticateToken, requireLabTenant, async (req: Authen
 });
 
 /**
- * 4. Request Parts Required
+ * 4. Request Parts Required (Seamless route to QC & Manager with Instant Notification)
  */
 router.post('/:id/parts-required', authenticateToken, requireLabTenant, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   const labId = req.user!.labId!;
@@ -882,7 +886,10 @@ router.post('/:id/parts-required', authenticateToken, requireLabTenant, async (r
 
   const job = await prisma.repairJob.findFirst({
     where: { id: req.params.id, labId },
-    include: { attempts: { orderBy: { attemptNumber: 'desc' }, take: 1 } },
+    include: {
+      device: { include: { model: true, imeis: true } },
+      attempts: { orderBy: { attemptNumber: 'desc' }, take: 1 },
+    },
   });
 
   if (!job) {
@@ -890,13 +897,15 @@ router.post('/:id/parts-required', authenticateToken, requireLabTenant, async (r
     return;
   }
 
+  // Update latest attempt with explicit parts description
   if (job.attempts.length > 0) {
     await prisma.repairAttempt.update({
       where: { id: job.attempts[0].id },
-      data: { partsRequiredDesc: input.partsDescription },
+      data: { partsRequiredDesc: input.partsDescription.trim() },
     });
   }
 
+  // 1. Transition Status to PARTS_REQUIRED
   await StatusTransitionService.transition({
     labId,
     deviceId: job.deviceId,
@@ -907,7 +916,85 @@ router.post('/:id/parts-required', authenticateToken, requireLabTenant, async (r
     notes: input.notes,
   });
 
-  res.json({ success: true, message: 'Status updated to PARTS_REQUIRED' });
+  // 2. Transfer physical custody to QC / Parts Department
+  try {
+    await prisma.device.update({
+      where: { id: job.deviceId },
+      data: {
+        currentDepartment: Department.QC,
+        currentStatus: DeviceStatus.PARTS_REQUIRED,
+      },
+    });
+  } catch (devErr) {
+    console.warn('[PartsRequired] Device department update warning:', devErr);
+  }
+
+  // 3. Log movement record: Tech -> QC (Parts Required)
+  try {
+    await recordDeviceMovement({
+      labId,
+      deviceId: job.deviceId,
+      fromDepartment: Department.BOARD_REPAIR,
+      toDepartment: Department.QC,
+      fromUserId: userId,
+      toUserId: null,
+      reason: `Parts Required: ${input.partsDescription.trim()}`,
+      notes: input.notes || undefined,
+    });
+  } catch (moveErr) {
+    console.warn('[PartsRequired] Movement recording warning:', moveErr);
+  }
+
+  // 4. Save to Work Notes
+  try {
+    await prisma.repairNote.create({
+      data: {
+        repairJobId: job.id,
+        userId,
+        note: `📦 Parts Demanded: "${input.partsDescription.trim()}"${input.notes ? ` (Note: ${input.notes.trim()})` : ''}`,
+      },
+    });
+  } catch {}
+
+  // 5. Send instant notification to all QC Technicians & Lab Managers
+  try {
+    const qcAndManagers = await prisma.labMembership.findMany({
+      where: {
+        labId,
+        isActive: true,
+        role: { in: [UserRole.QC_TECHNICIAN, UserRole.LAB_OWNER, UserRole.LAB_MANAGER] },
+      },
+      select: { userId: true },
+    });
+
+    const techUser = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+    const techName = techUser?.name || 'Hardware Tech';
+    const modelName = job.device?.model?.name || 'iPhone';
+
+    for (const member of qcAndManagers) {
+      await prisma.notification.create({
+        data: {
+          labId,
+          userId: member.userId,
+          title: `📦 Parts Demanded: Job #${job.jobNumber} (${modelName})`,
+          body: `${techName} requested part: ${input.partsDescription.trim()}`,
+          data: {
+            repairJobId: job.id,
+            deviceId: job.deviceId,
+            jobNumber: job.jobNumber,
+            partsDescription: input.partsDescription.trim(),
+          },
+        },
+      });
+    }
+  } catch (notifErr) {
+    console.warn('[PartsRequired] Notification delivery warning:', notifErr);
+  }
+
+  res.json({
+    success: true,
+    message: 'Parts request submitted! Custody routed to QC & Manager Parts Queue with instant notification.',
+  });
 });
 
 /**

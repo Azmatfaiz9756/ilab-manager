@@ -22,12 +22,13 @@ app.use(cors({ origin: config.corsOrigin }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Rate Limiting
+// Generous Rate Limiting for multi-user workshop operations (eliminates 429 throttling)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 300, // max requests per window
+  max: 100000, // generous quota for concurrent technician/manager polling
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.path === '/api/health' || req.headers['x-lab-id'] !== undefined,
 });
 app.use('/api/', limiter);
 

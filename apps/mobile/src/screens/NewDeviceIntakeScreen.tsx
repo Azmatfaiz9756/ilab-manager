@@ -1760,15 +1760,17 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                 const jn = (job.jobNumber || '').toLowerCase();
                 const tech = (job.assignments?.[0]?.technician?.name || '').toLowerCase();
                 const imeis = (dev.imeis || []).map((i: any) => i.imei).join(' ');
-                const lastAttemptNote = (job.attempts?.[0]?.workPerformed || '').toLowerCase();
-                return model.includes(q) || jn.includes(q) || tech.includes(q) || imeis.includes(q) || lastAttemptNote.includes(q);
+                const lastAttempt = job.attempts?.[0];
+                const partsDesc = (lastAttempt?.partsRequiredDesc || '').toLowerCase();
+                const workDesc = (lastAttempt?.workPerformed || '').toLowerCase();
+                return model.includes(q) || jn.includes(q) || tech.includes(q) || imeis.includes(q) || partsDesc.includes(q) || workDesc.includes(q);
               })
               .map((job: any) => {
                 const dev = job.device || {};
                 const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
                 const techName = job.assignments?.[0]?.technician?.name || 'Hardware Technician';
                 const lastAttempt = job.attempts?.[0];
-                const partsNeededDesc = lastAttempt?.workPerformed || lastAttempt?.diagnosis || 'Part required for board repair';
+                const partsNeededDesc = lastAttempt?.partsRequiredDesc || (job.notes && job.notes[0]?.note) || lastAttempt?.workPerformed || lastAttempt?.diagnosis || 'Part required for board repair';
 
                 return (
                   <View key={job.id} style={styles.partsQueueCard}>
@@ -1816,7 +1818,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                         style={styles.fulfillPartBtn}
                         onPress={() => {
                           setFulfillingJob(job);
-                          setFulfillPartName(lastAttempt?.workPerformed || '');
+                          setFulfillPartName(lastAttempt?.partsRequiredDesc || '');
                           setFulfillPartCost('');
                           setFulfillNotes('');
                         }}
