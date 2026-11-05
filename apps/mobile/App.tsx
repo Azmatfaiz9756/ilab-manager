@@ -28,6 +28,7 @@ import { IMEISearchScreen } from './src/screens/IMEISearchScreen';
 import { TeamScreen } from './src/screens/TeamScreen';
 import { AnalyticsScreen } from './src/screens/AnalyticsScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -43,7 +44,6 @@ type Tab = 'dashboard' | 'intake' | 'repairs' | 'qc' | 'search' | 'team' | 'anal
 function MainApp() {
   const { isAuthenticated, isLoading, initAuth, user } = useAuthStore();
   const { initSettings } = useSettingsStore();
-  const [currentTab, setCurrentTab] = useState<Tab>('dashboard');
   const insets = useSafeAreaInsets();
 
   const role = user?.role || UserRole.VIEWER;
@@ -51,6 +51,9 @@ function MainApp() {
   const isQCTech = role === UserRole.QC_TECHNICIAN;
   const isOwnerOrManager =
     role === UserRole.LAB_OWNER || role === UserRole.LAB_MANAGER || role === UserRole.SUPER_ADMIN;
+
+  const defaultRoleTab: Tab = isHardwareTech ? 'repairs' : isQCTech ? 'intake' : 'dashboard';
+  const [currentTab, setCurrentTab] = useState<Tab>(defaultRoleTab);
 
   const topInset = Math.max(insets.top, Platform.OS === 'android' ? (NativeStatusBar.currentHeight || 28) : 0);
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 24 : 12);
@@ -60,18 +63,23 @@ function MainApp() {
     initSettings();
   }, []);
 
-  // Set default starting tab strictly based on user role
+  // Set default starting tab strictly based on user role upon login / role switch
   useEffect(() => {
+    if (!user) return;
     if (isHardwareTech) {
-      if (currentTab !== 'repairs' && currentTab !== 'search' && currentTab !== 'dashboard' && currentTab !== 'settings') {
+      if (currentTab === 'dashboard' || currentTab === 'intake' || currentTab === 'team' || currentTab === 'analytics') {
         setCurrentTab('repairs');
       }
     } else if (isQCTech) {
-      if (currentTab !== 'intake' && currentTab !== 'qc' && currentTab !== 'search' && currentTab !== 'dashboard' && currentTab !== 'settings') {
+      if (currentTab === 'dashboard' || currentTab === 'repairs' || currentTab === 'team' || currentTab === 'analytics') {
         setCurrentTab('intake');
       }
+    } else if (isOwnerOrManager) {
+      if (currentTab === 'intake') {
+        setCurrentTab('dashboard');
+      }
     }
-  }, [role]);
+  }, [user?.id, role]);
 
   // Android Hardware Back Button navigation: Prevent accidental logouts
   useEffect(() => {
@@ -120,14 +128,16 @@ function MainApp() {
       <View style={styles.container}>
         {/* Active Tab Screen */}
         <View style={styles.screenContainer}>
-          {currentTab === 'dashboard' && <DashboardScreen />}
-          {currentTab === 'intake' && <NewDeviceIntakeScreen onSuccess={() => setCurrentTab('qc')} />}
-          {currentTab === 'repairs' && <MyRepairsScreen />}
-          {currentTab === 'qc' && <QCScreen />}
-          {currentTab === 'search' && <IMEISearchScreen />}
-          {currentTab === 'team' && <TeamScreen />}
-          {currentTab === 'analytics' && <AnalyticsScreen />}
-          {currentTab === 'settings' && <SettingsScreen />}
+          <ErrorBoundary fallbackTitle="Screen Recovery">
+            {currentTab === 'dashboard' && <DashboardScreen />}
+            {currentTab === 'intake' && <NewDeviceIntakeScreen onSuccess={() => setCurrentTab('qc')} />}
+            {currentTab === 'repairs' && <MyRepairsScreen />}
+            {currentTab === 'qc' && <QCScreen />}
+            {currentTab === 'search' && <IMEISearchScreen />}
+            {currentTab === 'team' && <TeamScreen />}
+            {currentTab === 'analytics' && <AnalyticsScreen />}
+            {currentTab === 'settings' && <SettingsScreen />}
+          </ErrorBoundary>
         </View>
 
         {/* Bottom Tab Bar (Strictly Role-Tailored: Zero Interference) */}

@@ -73,7 +73,7 @@ export function matchIPhoneModels(query: string, models: Array<{ id: string; nam
 
 export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const queryClient = useQueryClient();
-  const { formatMoney, printerWidth, labName, labPhone } = useSettingsStore();
+  const { formatMoney, currencySymbol, printerWidth, labName, labPhone } = useSettingsStore();
 
   // Top Operations Segment: 'intake' | 'sent_to_tech' | 'parts_required' | 'dispatch' | 'history'
   const [activeSegment, setActiveSegment] = useState<'intake' | 'sent_to_tech' | 'parts_required' | 'dispatch' | 'history'>('intake');
@@ -218,9 +218,11 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     queryKey: ['team_list'],
     queryFn: () => apiRequest('/team'),
   });
-  const technicians = (teamData?.data || []).filter(
-    (m: any) => m.role === 'BOARD_TECHNICIAN' && m.isActive
-  );
+  const technicians = useMemo(() => {
+    return (teamData?.data || []).filter(
+      (m: any) => m.role === 'BOARD_TECHNICIAN' && m.isActive
+    );
+  }, [teamData]);
 
   // Flattened list of all faults for autocomplete
   const allCatalogFaults = useMemo(() => {
@@ -239,7 +241,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
   // Selected Model Object
   const selectedModelObj = useMemo(() => {
-    return models.find((m: any) => m.id === defaultModelId) || models[0];
+    return models.find((m: any) => m.id === defaultModelId) || models[0] || null;
   }, [models, defaultModelId]);
 
   // Intelligent Shorthand Matcher Results
@@ -253,7 +255,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
     if (technicians.length === 1 && !assignedTechId) {
       setAssignedTechId(technicians[0].id);
     }
-  }, [technicians, assignedTechId]);
+  }, [technicians.length, assignedTechId]);
 
   const [manualImeiInput, setManualImeiInput] = useState('');
 
@@ -281,12 +283,13 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
   const lastScanTimeRef = useRef<number>(0);
   const lastScannedImeiRef = useRef<string>('');
 
-  // Ensure default model is set once models load
-  if (models.length > 0 && !defaultModelId) {
-    // Default to iPhone 12 if available, else first model
-    const iphone12 = models.find((m: any) => m.name.toLowerCase().includes('iphone 12'));
-    setDefaultModelId(iphone12 ? iphone12.id : models[0].id);
-  }
+  // Ensure default model is set safely inside useEffect once models load
+  React.useEffect(() => {
+    if (models.length > 0 && !defaultModelId) {
+      const iphone12 = models.find((m: any) => m.name.toLowerCase().includes('iphone 12'));
+      setDefaultModelId(iphone12 ? iphone12.id : models[0].id);
+    }
+  }, [models.length, defaultModelId]);
 
   // Helper to add IMEI into batch with Auto-Return Claim check
   const addImeiToBatch = async (rawImei: string): Promise<boolean> => {
@@ -1518,7 +1521,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
 
                     {/* Faults Tags on this row */}
                     <View style={styles.rowFaultsWrap}>
-                      {item.customFaults.map((cf) => (
+                      {(item.customFaults || []).map((cf) => (
                         <View key={cf} style={styles.rowFaultChip}>
                           <Text style={styles.rowFaultText}>{cf}</Text>
                           <TouchableOpacity
@@ -1526,7 +1529,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                               setBatchItems((prev) =>
                                 prev.map((b) =>
                                   b.id === item.id
-                                    ? { ...b, customFaults: b.customFaults.filter((x) => x !== cf) }
+                                    ? { ...b, customFaults: (b.customFaults || []).filter((x) => x !== cf) }
                                     : b
                                 )
                               );
@@ -1536,7 +1539,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
                           </TouchableOpacity>
                         </View>
                       ))}
-                      {item.faultIds.map((fId) => {
+                      {(item.faultIds || []).map((fId) => {
                         const faultObj = allCatalogFaults.find((f) => f.id === fId);
                         return (
                           <View key={fId} style={styles.rowFaultChip}>
@@ -1901,8 +1904,8 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
             </View>
           ) : (
             dispatchJobs.map((job: any) => {
-              const dev = job.device;
-              const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei;
+              const dev = job.device || {};
+              const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
               const isSelected = selectedJobIds.includes(job.id);
               const isDispatched = job.status === DeviceStatus.DISPATCHED;
 
@@ -2017,8 +2020,8 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
           </View>
 
           {dispatchJobs.map((job: any) => {
-            const dev = job.device;
-            const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei;
+            const dev = job.device || {};
+            const primaryImei = dev.imeis?.find((i: any) => i.isPrimary)?.imei || dev.imeis?.[0]?.imei || 'NO-IMEI';
             return (
               <View key={job.id} style={styles.historyCard}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -2139,12 +2142,12 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
             {/* Current Faults */}
             <Text style={styles.label}>Current Faults:</Text>
             <View style={styles.activeFaultsWrap}>
-              {editingRowItem?.customFaults.map((cf) => (
+              {(editingRowItem?.customFaults || []).map((cf) => (
                 <View key={cf} style={styles.faultActiveChip}>
                   <Text style={styles.faultActiveChipText}>{cf}</Text>
                 </View>
               ))}
-              {editingRowItem?.faultIds.map((fId) => {
+              {(editingRowItem?.faultIds || []).map((fId) => {
                 const f = allCatalogFaults.find((x) => x.id === fId);
                 return (
                   <View key={fId} style={styles.faultActiveChip}>
@@ -2408,7 +2411,7 @@ export const NewDeviceIntakeScreen: React.FC<{ onSuccess?: () => void }> = ({ on
             />
 
             <Text style={[styles.label, { marginTop: spacing.sm }]}>
-              Part Sourcing Cost ({formatMoney(0).charAt(0)})
+              Part Sourcing Cost ({currencySymbol || 'AED'})
             </Text>
             <TextInput
               style={styles.metaInput}
